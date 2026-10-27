@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RF Localization MVP</title>
+<style>
+  :root { font-family: Inter, system-ui, sans-serif; color-scheme: dark; }
+  body { margin:0; background:#101318; color:#edf1f7; }
+  .wrap { max-width:1280px; margin:auto; padding:24px; }
+  h1 { margin:0 0 6px; font-size:26px; }
+  .sub { color:#9ba6b5; margin-bottom:20px; }
+  .panel { background:#181d24; border:1px solid #2b333e; border-radius:14px; padding:16px; margin-bottom:16px; }
+  .controls { display:grid; grid-template-columns:repeat(5, minmax(120px,1fr)); gap:10px; }
+  label { display:block; color:#9ba6b5; font-size:12px; margin-bottom:5px; }
+  input, button { width:100%; box-sizing:border-box; padding:10px 11px; border-radius:9px; border:1px solid #37414f; background:#0f1318; color:#fff; }
+  button { cursor:pointer; background:#27313d; }
+  button:hover { background:#334052; }
+  .layout { display:grid; grid-template-columns:1.6fr 1fr; gap:16px; }
+  .meta { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .stat { background:#0f1318; border-radius:10px; padding:10px; }
+  .stat small { display:block; color:#8995a5; }
+  .stat strong { font-size:18px; }
+  #room { width:100%; aspect-ratio: 4/3; background:#0c0f13; border-radius:10px; border:1px solid #2b333e; }
+  .dot { filter: drop-shadow(0 0 5px rgba(255,255,255,.7)); }
+  .ok { color:#77e09a; }
+  .warn { color:#f5c66d; }
+  .danger { color:#ff6b6b; }
+  .rssi { font-family:ui-monospace, SFMono-Regular, monospace; }
+  .node-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+  .node-card { background:#0f1318; border:1px solid #303846; border-radius:10px; padding:12px; }
+  .node-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .node-name { font-weight:700; }
+  .node-state { font-size:12px; font-weight:700; display:flex; align-items:center; gap:6px; }
+  .status-dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .online .status-dot { background:#4ade80; box-shadow:0 0 8px rgba(74,222,128,.65); }
+  .offline .status-dot { background:#ef4444; }
+  .unknown .status-dot { background:#94a3b8; }
+  .node-meta { margin-top:8px; color:#8995a5; font-size:12px; line-height:1.6; }
+  .legend { display:flex; gap:18px; color:#9ba6b5; font-size:12px; flex-wrap:wrap; }
+  .legend span { display:flex; align-items:center; gap:6px; }
+  .swatch { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .swatch.white { background:#fff; }
+  .swatch.green { background:#4ade80; }
+  .swatch.red { background:#ef4444; }
+  .map-node-label { font-weight:700; }
+  @media(max-width:900px) { .layout { grid-template-columns:1fr; } .controls { grid-template-columns:1fr 1fr; } }
+  @media(max-width:600px) { .controls { grid-template-columns:1fr; } .meta,.node-grid { grid-template-columns:1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>RF Localization MVP</h1>
+  <div class="sub">4-corner WCL zone test · live MQTT → FastAPI → WebSocket</div>
+
+  <div class="panel">
+    <div class="controls">
+      <div><label>Room width (m)</label><input id="width" type="number" min="0.1" step="0.1"></div>
+      <div><label>Room length (m)</label><input id="length" type="number" min="0.1" step="0.1"></div>
+      <div><label>Grid cell width (m)</label><input id="cellWidth" type="number" min="0.1" step="0.1"></div>
+      <div><label>Grid cell length (m)</label><input id="cellLength" type="number" min="0.1" step="0.1"></div>
+      <div><label>Session ID</label><input id="session" value="session-dev-001"></div>
+    </div>
+    <button id="apply" style="margin-top:10px">Apply room + grid</button>
+    <div id="configText" class="sub" style="margin:12px 0 0"></div>
+    <div class="legend" style="margin-top:10px">
+      <span><i class="swatch white"></i> Localized device</span>
+      <span><i class="swatch green"></i> ESP32 online</span>
+      <span><i class="swatch red"></i> ESP32 offline</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px">
+      <strong>ESP32 Node Status</strong>
+      <span id="nodeSummary" class="sub" style="margin:0">Checking…</span>
+    </div>
+    <div id="nodeGrid" class="node-grid"></div>
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <svg id="room" viewBox="0 0 1000 760" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <div>
+      <div class="panel meta">
+        <div class="stat"><small>Zone</small><strong id="zone">—</strong></div>
+        <div class="stat"><small>X (m)</small><strong id="x">—</strong></div>
+        <div class="stat"><small>Y (m)</small><strong id="y">—</strong></div>
+        <div class="stat"><small>Nodes Used</small><strong id="nodes">—</strong></div>
+        <div class="stat"><small>Confidence</small><strong id="confidence">—</strong></div>
+        <div class="stat"><small>Epoch</small><strong id="epoch">—</strong></div>
+      </div>
+      <div class="panel">
+        <div><strong>Gateway / WebSocket</strong></div>
+        <div id="status" class="sub">Connecting…</div>
+      </div>
+      <div class="panel">
+        <strong>RSSI vector</strong>
+        <div id="vector" class="rssi" style="margin-top:10px;line-height:1.8">—</div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+let room = null;
+let lastResult = null;
+let nodeStates = {};
+let ws = null;
+let reconnectTimer = null;
+const $ = id => document.getElementById(id);
+
+async function apiJson(url, options={}) {
+  const r = await fetch(url, options);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function loadRoom() {
+  try {
+    room = await apiJson('/api/v1/room');
+    $('width').value = room.width_m;
+    $('length').value = room.length_m;
+    $('cellWidth').value = room.grid_config.cell_width_m;
+    $('cellLength').value = room.grid_config.cell_length_m;
+    updateConfigText();
+    drawRoom();
+  } catch (err) {
+    $('configText').textContent = `Failed to load room: ${err.message}`;
+  }
+}
+
+function updateConfigText() {
+  if (!room) return;
+  $('configText').textContent =
+    `Grid: ${room.grid_config.columns} columns × ${room.grid_config.rows} rows · ` +
+    `requested cell size: ${room.grid_config.cell_width_m.toFixed(2)}m × ${room.grid_config.cell_length_m.toFixed(2)}m · ` +
+    `room: ${room.width_m.toFixed(2)}m × ${room.length_m.toFixed(2)}m`;
+}
+
+async function applyRoom() {
+  const width_m = Number($('width').value);
+  const length_m = Number($('length').value);
+  const grid_cell_width_m = Number($('cellWidth').value);
+  const grid_cell_length_m = Number($('cellLength').value);
+
+  if (!(width_m > 0) || !(length_m > 0) || !(grid_cell_width_m > 0) || !(grid_cell_length_m > 0)) {
+    alert('Room dimensions and grid cell dimensions must be greater than 0.');
+    return;
+  }
+
+  try {
+    room = await apiJson('/api/v1/room', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({width_m, length_m, grid_cell_width_m, grid_cell_length_m})
+    });
+    $('width').value = room.width_m;
+    $('length').value = room.length_m;
+    $('cellWidth').value = room.grid_config.cell_width_m;
+    $('cellLength').value = room.grid_config.cell_length_m;
+    updateConfigText();
+    drawRoom();
+  } catch (err) {
+    alert(`Failed to update room: ${err.message}`);
+  }
+}
+
+function nodeStatusColor(id) {
+  const state = nodeStates[id];
+  if (!state) return '#94a3b8';
+  return state.online ? '#4ade80' : '#ef4444';
+}
+
+function renderNodeCards() {
+  const ids = ['ESP01','ESP02','ESP03','ESP04'];
+  const onlineCount = ids.filter(id => nodeStates[id]?.online).length;
+  $('nodeSummary').textContent = `${onlineCount}/${ids.length} online`;
+
+  $('nodeGrid').innerHTML = ids.map(id => {
+    const n = nodeStates[id];
+    const stateClass = !n ? 'unknown' : (n.online ? 'online' : 'offline');
+    const stateText = !n ? 'UNKNOWN' : (n.online ? 'ONLINE' : 'OFFLINE');
+    const age = n?.seconds_since_seen == null ? 'never seen' : `${n.seconds_since_seen.toFixed(1)}s ago`;
+    const session = n?.session_id || '—';
+    const msg = n?.last_message_type || '—';
+    return `
+      <div class="node-card ${stateClass}">
+        <div class="node-head">
+          <span class="node-name">${id}</span>
+          <span class="node-state"><i class="status-dot"></i>${stateText}</span>
+        </div>
+        <div class="node-meta">Last message: ${age}<br>Type: ${msg}<br>Session: ${session}</div>
+      </div>`;
+  }).join('');
+}
+
+async function refreshNodes() {
+  try {
+    const nodes = await apiJson('/api/v1/nodes');
+    nodeStates = {};
+    for (const n of nodes) nodeStates[n.node_id] = n;
+    renderNodeCards();
+    drawRoom();
+  } catch (err) {
+    $('nodeSummary').textContent = 'Node status unavailable';
+  }
+}
+
+function drawRoom() {
+  const svg = $('room');
+  if (!room) return;
+  const W=1000, H=760, pad=95;
+  const scale=Math.min((W-2*pad)/room.width_m, (H-2*pad)/room.length_m);
+  const rw=room.width_m*scale, rh=room.length_m*scale;
+  const ox=(W-rw)/2, oy=(H-rh)/2;
+  let out='';
+  out += `<rect x="${ox}" y="${oy}" width="${rw}" height="${rh}" rx="8" fill="#12171d" stroke="#95a1af" stroke-width="3"/>`;
+
+  for (const z of room.grid.zones) {
+    const x=ox+z.x0_m*scale, y=oy+z.y0_m*scale, w=z.width_m*scale, h=z.length_m*scale;
+    out += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#151b22" stroke="#303a46"/>`;
+    out += `<text x="${x+w/2}" y="${y+h/2}" fill="#768394" text-anchor="middle" dominant-baseline="middle" font-size="22">${z.zone_id}</text>`;
+  }
+
+  for (const [id,n] of Object.entries(room.nodes)) {
+    const x=ox+n.x_m*scale, y=oy+n.y_m*scale;
+    const dx=id==='ESP01'||id==='ESP03'?-16:16;
+    const anchor=id==='ESP01'||id==='ESP03'?'end':'start';
+    const dy=id==='ESP01'||id==='ESP02'?-14:28;
+    const color=nodeStatusColor(id);
+    out += `<circle cx="${x}" cy="${y}" r="14" fill="none" stroke="${color}" stroke-width="3" opacity=".45"/>`;
+    out += `<circle cx="${x}" cy="${y}" r="8" fill="${color}"/>`;
+    out += `<text x="${x+dx}" y="${y+dy}" fill="#d9e0e9" text-anchor="${anchor}" font-size="17" class="map-node-label">${id}</text>`;
+  }
+
+  out += `<text x="${W/2}" y="${oy+rh+52}" fill="#8995a5" text-anchor="middle" font-size="16">width ${room.width_m.toFixed(2)} m</text>`;
+  out += `<text x="${ox-46}" y="${oy+rh/2}" fill="#8995a5" text-anchor="middle" font-size="16" transform="rotate(-90 ${ox-46} ${oy+rh/2})">length ${room.length_m.toFixed(2)} m</text>`;
+
+  if (lastResult) {
+    const tx=ox+lastResult.x_m*scale, ty=oy+lastResult.y_m*scale;
+    out += `<circle cx="${tx}" cy="${ty}" r="18" fill="none" stroke="#ffffff" stroke-width="4" opacity=".55"/>`;
+    out += `<circle cx="${tx}" cy="${ty}" r="8" fill="#ffffff" class="dot"/>`;
+    out += `<text x="${tx+13}" y="${ty-15}" fill="#ffffff" font-weight="700" font-size="18">DEVICE</text>`;
+  }
+
+  svg.innerHTML=out;
+}
+
+function renderResult(r) {
+  lastResult=r;
+  drawRoom();
+  $('zone').textContent=r.zone_id || '—';
+  $('x').textContent=Number(r.x_m).toFixed(2);
+  $('y').textContent=Number(r.y_m).toFixed(2);
+  $('nodes').textContent=r.nodes_used;
+  $('confidence').textContent=(Number(r.confidence)*100).toFixed(0)+'%';
+  $('epoch').textContent=r.epoch_id;
+  $('vector').innerHTML=Object.entries(r.rssi_vector_dbm || {})
+    .map(([k,v])=>`${k}: ${Number(v).toFixed(2)} dBm`)
+    .join('<br>') || '—';
+}
+
+function connect() {
+  if (ws) ws.close();
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  const session=encodeURIComponent($('session').value.trim());
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(`${proto}://${location.host}/ws/v1/sessions/${session}`);
+  ws.onopen=()=>{
+    $('status').textContent='WebSocket connected';
+    $('status').className='ok';
+  };
+  ws.onclose=()=>{
+    $('status').textContent='WebSocket disconnected; retrying…';
+    $('status').className='warn';
+    reconnectTimer=setTimeout(connect,1500);
+  };
+  ws.onerror=()=>{
+    $('status').textContent='WebSocket error';
+    $('status').className='warn';
+  };
+  ws.onmessage=e=>{
+    try { renderResult(JSON.parse(e.data)); } catch(_) {}
+  };
+}
+
+$('apply').onclick=applyRoom;
+$('session').onchange=connect;
+
+(async function init() {
+  await loadRoom();
+  await refreshNodes();
+  connect();
+  setInterval(refreshNodes, 1000);
+})();
+</script>
+</body>
+</html>
