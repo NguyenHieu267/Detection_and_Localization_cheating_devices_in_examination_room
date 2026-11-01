@@ -1,229 +1,507 @@
-# RF Localization MVP — first physical WCL zone test
+# RF Localization — hướng dẫn chạy và đo thực tế
 
-This version is intentionally focused on the first physical experiment:
+4 ESP32 thu RSSI thô và gửi MQTT về laptop. Gateway Python lưu SQLite, tính
+thống kê RSSI, ghép vector 4 node cùng session/epoch/target rồi chạy WCL và hiển
+thị Dashboard. README này gom cách chạy đã thực hiện trên Windows, các lỗi đã
+gặp và quy trình thu dữ liệu thực tế.
 
-```text
-Phone Wi-Fi traffic
-      ↓
-4 ESP32 nodes at room corners
-      ↓
-1-second RSSI aggregation per node
-      ↓
-MQTT EPOCH_OBSERVATION
-      ↓
-Python Gateway
-      ↓
-merge the same device across ESP01..ESP04
-      ↓
-YOUR EXISTING relative-RSSI WCL formula
-      ↓
-physical (x,y)
-      ↓
-automatically generated rectangular grid
-      ↓
-Zone ID + live room visualization
-```
+## 1. Chạy lại nhanh khi đã cấu hình ESP32
 
-The first test uses **one target device**, but the firmware does not need to lock the radio to that MAC. It can keep observing all Wi-Fi devices; a publish-time target option can reduce the outgoing payload to the one phone for easier testing.
+Mở VS Code → Terminal → New Terminal. Dùng **hai terminal riêng**, giữ cả hai chạy.
 
-## 1. Automatic grid behavior
+**Terminal 1 — Mosquitto:**
 
-The Gateway asks only for:
+~~~powershell
+cd "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid"
+& "C:\Program Files\mosquitto\mosquitto.exe" -c ".\scripts\mosquitto.conf" -v
+~~~
 
-- room width (m)
-- room length (m)
+Nếu cổng bị chiếm hoặc broker chỉ nghe localhost, xử lý theo mục 5.
 
-It calculates the number of columns/rows automatically using a target zone size of 2 m wide × 4 m long by default.
+**Terminal 2 — Gateway:**
 
-For example:
+~~~powershell
+cd "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid"
 
-```text
-room = 8 m × 12 m
+$env:MQTT_HOST = "127.0.0.1"
+$env:MQTT_PORT = "1883"
+$env:TARGET_DEVICE_MAC = "66:C2:DE:00:BE:87"
+$env:TARGET_DEVICE_TOKEN = ""
+$env:DEVICE_TOKEN_SALT = "rf-mvp-shared-salt-change-me"
+$env:LOCALIZE_TARGET_ONLY = "true"
+$env:MIN_OVERLAP_MS = "600"
+$env:EPOCH_TIMEOUT_MS = "1800"
+$env:DATABASE_PATH = "$PWD\rf_gateway.db"
 
-columns = ceil(8 / 2)  = 4
-rows    = ceil(12 / 4) = 3
+& .\.venv\Scripts\python.exe -m uvicorn main:app --app-dir gateway --host 0.0.0.0 --port 8000
+~~~
 
-=> 4 columns × 3 rows = 12 zones
-```
+Cấp nguồn 4 ESP32, mở **http://127.0.0.1:8000**, đặt Session ID là
+**session-dev-001**, giống cả 4 node. Chờ đủ 4 node online, synced và
+complete / Nodes Used = 4 trước khi đo.
 
-The final cells are resized equally so the complete room is covered exactly.
+BSSID target phía trên là giá trị của mạng đã dùng; kiểm tra lại nếu hotspot
+đổi. Biến môi trường chỉ áp dụng cho terminal hiện tại, đặt lại khi mở terminal
+mới. Không cần activate venv khi dùng đường dẫn python.exe đầy đủ.
 
-Change `TARGET_ZONE_WIDTH_M` and `TARGET_ZONE_LENGTH_M` if you want a different grid density.
+**Không chạy lệnh này từ thư mục cha “do an”. Activate không tự đổi thư mục.**
+Nếu chưa cài venv hoặc chưa cấu hình node, làm lần lượt các mục dưới.
 
-## 2. Room coordinate system
+## 2. Thiết bị và sơ đồ mạng
 
-```text
-ESP01 (0,0)                 ESP02 (width,0)
-       +-----+-----+-----+
-       | Z1  | Z2  | Z3  | ...
-       +-----+-----+-----+
-       | ...              |
-       +------------------+
-ESP03 (0,length)            ESP04 (width,length)
-```
+~~~text
+Điện thoại: hotspot 2.4 GHz + target của bài thử
+    ├── ESP01 ──┐
+    ├── ESP02 ──┤ gửi RSSI qua MQTT
+    ├── ESP03 ──┤
+    ├── ESP04 ──┘
+    └── Laptop: Mosquitto :1883 + Gateway/Dashboard :8000
+~~~
 
-The dashboard shows the four anchors and the latest estimated device position.
+- Hotspot cần nhận ít nhất **5 thiết bị đồng thời**: 4 ESP32 và laptop.
+- Bật dữ liệu di động cho ESP32 đồng bộ NTP; chọn hotspot **2.4 GHz**.
+  Nếu có tự tắt hotspot thì tắt trong buổi đo. Trên iPhone có hỗ trợ, bật
+  Maximize Compatibility / Tối đa hóa tương thích.
+- USB dùng để flash, xem Serial và cấp nguồn; dữ liệu đo đi qua Wi-Fi.
+- Bài này định vị **điện thoại đang phát hotspot**. Nếu định vị điện thoại khác,
+  phải xác định đúng MAC phát frame của thiết bị đó trên kênh đang thu.
+- Giữ laptop cố định, hotspot bật và nguồn ESP32 ổn định.
 
-## 3. WCL used in this version
+Firmware hiện dùng board **esp32dev** cho ESP32 DevKit/WROOM-32 thông thường.
+Với C3/S2/S3 hoặc board khác, kiểm tra lại board trước khi flash. Wi-Fi, MQTT,
+Node ID, session và target nhập bằng web, không cần sửa source trước khi flash.
 
-The Gateway intentionally matches the WCL implementation in the provided Member-A PoC:
+## 3. Xác định IP laptop và MAC target
 
-```text
-max_rssi = strongest observed RSSI
-weight_i = 10^((rssi_i - max_rssi) / 10)
+Kết nối laptop vào hotspot, chạy:
 
-u = sum(weight_i * anchor_u_i) / sum(weight_i)
-v = sum(weight_i * anchor_v_i) / sum(weight_i)
+~~~powershell
+ipconfig
+netsh wlan show interfaces
+~~~
 
-x = u * room_width
- y = v * room_length
-```
+Lấy IPv4 của adapter Wi-Fi và BSSID của đúng hotspot.
 
-Anchors are normalized:
+| Thông tin đã ghi nhận | Giá trị | Dùng làm gì |
+|---|---|---|
+| SSID | V50 | Wi-Fi của các node |
+| IPv4 laptop | 192.168.87.160 | mqtt_host trên ESP32 |
+| Default Gateway | 192.168.87.233 | Điện thoại/hotspot, không phải broker |
+| BSSID | 66:C2:DE:00:BE:87 | target_mac khi đo điện thoại phát hotspot |
+| Channel | 11 | Kênh 2.4 GHz đã dùng |
 
-```text
-ESP01 = (0,0)
-ESP02 = (1,0)
-ESP03 = (0,1)
-ESP04 = (1,1)
-```
+Đây là thông tin của lần chạy trước, **không cố định**. Kiểm tra lại sau khi
+tắt/bật hotspot, đổi mạng hoặc laptop kết nối lại. Nếu Windows yêu cầu quyền
+vị trí để đọc WLAN, làm theo thông báo rồi chạy lại.
 
-This makes this first test directly comparable with your existing WCL experiment.
+Không dùng Physical address của laptop làm target trong bài này. BSSID hotspot
+có thể khác MAC Wi-Fi trong phần giới thiệu điện thoại. Không nhập Default
+Gateway hoặc 127.0.0.1 vào mqtt_host trên ESP32.
 
-## 4. Firmware target-device test
+## 4. Python và venv
 
-Edit `esp32_firmware/src/config.h`.
+Máy đã dùng có Python, PlatformIO và Mosquitto. Nếu chuyển máy, cài các công cụ
+tương ứng rồi điều chỉnh đường dẫn. Các lệnh tương đối dưới đây chạy tại:
 
-Set the same Wi-Fi, MQTT broker, token salt, and session ID on all boards. Change only `NODE_ID` per board.
+~~~powershell
+cd "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid"
+~~~
 
-For the first one-phone test:
+### Tạo venv và cài thư viện lần đầu
 
-```cpp
-#define FOCUS_TARGET_MAC "AA:BB:CC:DD:EE:FF"
-#define PUBLISH_ONLY_FOCUS_TARGET true
-```
-
-When you want the node to send every device again:
-
-```cpp
-#define PUBLISH_ONLY_FOCUS_TARGET false
-```
-
-The radio still passively captures frames; this setting only controls which aggregated device records are placed into the outgoing MQTT report.
-
-**Important:** if the phone changes its Wi-Fi MAC because MAC randomization is active, the token will also change. A configured MAC is therefore suitable for a controlled PoC target only when the phone is using a stable MAC for the traffic you are measuring.
-
-## 5. Run Gateway
-
-```bash
+~~~powershell
+python --version
 python -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install -r .\gateway\requirements.txt
+& .\.venv\Scripts\python.exe -c "import fastapi, uvicorn, paho.mqtt.client, pydantic; print('Thu vien OK')"
+~~~
 
-# Windows
-.venv\\Scripts\\activate
+Venv đang chạy tốt thì dùng lại; không cần tạo hoặc cài lại mỗi lần. Có thể
+activate nếu muốn dùng lệnh python ngắn:
 
-# Linux/macOS
-source .venv/bin/activate
+~~~powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+& .\.venv\Scripts\Activate.ps1
+~~~
 
-pip install -r gateway/requirements.txt
+Activate không đổi thư mục hiện tại. Thoát môi trường bằng deactivate.
 
-# Optional: copy gateway/.env.example to gateway/.env and edit it.
-# The Gateway loads gateway/.env automatically.
+### Xóa venv cũ bị lỗi
 
-uvicorn gateway.main:app --host 0.0.0.0 --port 8000
-```
+1. Dừng Gateway và các chương trình đang dùng đúng venv này bằng Ctrl+C.
+2. Nếu đang activate, chạy deactivate.
+3. Kiểm tra đường dẫn rồi xóa đúng môi trường:
 
-Open:
+~~~powershell
+Get-Item -Force "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid\.venv"
+Remove-Item -LiteralPath "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid\.venv" -Recurse -Force
+~~~
 
-```text
-http://127.0.0.1:8000/
-```
+4. Tạo lại venv và cài requirements như phía trên.
 
-From another machine on the same LAN:
+Lỗi Access denied với python.exe hoặc .pyd thường do Gateway vẫn chạy và khóa
+file. **Deactivate không dừng Gateway.** Không tắt hàng loạt Python của
+PlatformIO/chương trình khác. Lần xóa thất bại có thể đã xóa một phần venv; sau
+khi dừng chương trình hãy xóa phần còn lại rồi tạo lại.
 
-```text
-http://<gateway-ip>:8000/
-```
+Source và database ngoài .venv không bị xóa; thư viện trong venv phải cài lại.
 
-The dashboard lets you enter width/length and immediately redraws the room/grid.
+## 5. Mosquitto, localhost và firewall
 
-## 6. Gateway target focus
+Cấu hình có sẵn trong scripts/mosquitto.conf:
 
-The ESP32 already sends only `device_token`, not the raw MAC. To tell the Gateway which device to localize, set either:
+~~~text
+listener 1883
+listener_allow_anonymous true
+socket_domain ipv4
+~~~
 
-```text
-TARGET_DEVICE_MAC=AA:BB:CC:DD:EE:FF
-```
+Cấu hình đã dùng với Mosquitto 2.1.2 trong lần chạy này. Nếu máy khác báo unknown
+configuration variable, kiểm tra phiên bản/cấu hình tương ứng. Broker anonymous
+này chỉ dùng trong mạng đo tin cậy.
 
-or:
+### Dừng dịch vụ đang chiếm cổng
 
-```text
-TARGET_DEVICE_TOKEN=...
-```
+Mở PowerShell **Run as administrator**:
 
-with:
+~~~powershell
+Get-Service *mosquitto*
+~~~
 
-```text
-LOCALIZE_TARGET_ONLY=true
-```
+Nếu dịch vụ mosquitto đang Running và muốn dùng broker của project:
 
-The Gateway still stores incoming evidence for all devices, but only the selected target produces `LOCALIZATION_UPDATE` records and WebSocket position messages.
+~~~powershell
+Stop-Service -Name mosquitto
+~~~
 
-For a simple first test, you can leave both target fields empty: when an epoch contains exactly one device, that single device is localized automatically. Once other Wi-Fi devices appear, configure `TARGET_DEVICE_MAC` or `TARGET_DEVICE_TOKEN` to identify the phone explicitly.
+Chạy Mosquitto ở Terminal 1 theo mục 1, hoặc chọn script thay thế:
 
-If `LOCALIZE_TARGET_ONLY=false`, every observed device is localized.
+~~~powershell
+.\scripts\start_mqtt.bat
+~~~
 
-## 7. MQTT contract
+Chỉ chạy **một** broker. Không chạy thêm script nếu đã dùng lệnh trực tiếp.
+Giữ terminal broker mở. Dịch vụ có thể chạy lại khi reboot Windows.
 
-Observation topic:
+Kiểm tra ở terminal khác:
 
-```text
-rf/v1/nodes/{node_id}/observation
-```
+~~~powershell
+netstat -ano -p tcp | Select-String ':1883'
+~~~
 
-Required payload fields:
+Cần LISTENING ở **0.0.0.0:1883** hoặc **IP Wi-Fi laptop:1883**.
+Nếu chỉ thấy **127.0.0.1:1883**, ESP32 không truy cập được. Đây là lỗi đã gặp:
+dịch vụ Mosquitto chạy nền chỉ nghe localhost; mở firewall không sửa listener.
+Dừng đúng instance và chạy broker với -c scripts/mosquitto.conf.
 
-```json
-{
-  "schema_version": "1.0",
-  "message_type": "EPOCH_OBSERVATION",
-  "message_id": "...",
-  "session_id": "...",
-  "epoch_id": 123,
-  "node_id": "ESP01",
-  "sniff_start_ms": 123000,
-  "sniff_end_ms": 124000,
-  "observations": [
-    {
-      "device_token": "64 hex chars",
-      "median_rssi_dbm": -52.0,
-      "packet_count": 20,
-      "mad_rssi_db": 1.5,
-      "mean_rssi_dbm": -52.2,
-      "min_rssi_dbm": -57.0,
-      "max_rssi_dbm": -49.0
-    }
-  ]
-}
-```
+### Firewall
 
-Ready topic:
+Trong PowerShell administrator, tạo rule một lần nếu chưa có:
 
-```text
-rf/v1/nodes/{node_id}/ready
-```
+~~~powershell
+New-NetFirewallRule -DisplayName "RF MQTT 1883" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1883 -RemoteAddress LocalSubnet -Profile Any
+~~~
 
-## 8. Test without ESP32
+Rule RF MQTT 1883 đã được tạo trong lần cấu hình này, không cần tạo lặp.
+Không cần tắt toàn bộ firewall. Có thể kiểm tra TCP bằng IP laptop hiện tại:
 
-Set a target MAC in the Gateway environment matching the simulator's `SIM_DEVICE_MAC` and run:
+~~~powershell
+Test-NetConnection 192.168.87.160 -Port 1883
+~~~
 
-```bash
-python -m gateway.simulate_mqtt
-```
+TcpTestSucceeded=True chỉ kiểm tra từ máy đang chạy lệnh; vẫn cần xác nhận
+mqtt_connected=true trên từng ESP.
 
-The four synthetic reports reconstruct into one epoch and produce a WCL result.
+Chuyển Mosquitto từ cửa sổ PowerShell ngoài vào VS Code: Ctrl+C ở cửa sổ cũ,
+Terminal → New Terminal trong VS Code rồi chạy broker lại. Không cần activate
+venv cho Mosquitto.
 
-## 9. ESP32 radio limitation
+## 6. Flash từng ESP32
 
-This MVP keeps the ESP32 connected as a Wi-Fi station so MQTT can operate. Promiscuous mode is enabled at the same time, but the radio remains constrained to the connected AP's channel; the first PoC should therefore use an AP/channel where the phone's traffic is actually present. Espressif documents sniffer operation in station mode and warns that it can affect station throughput. citeturn477758search25
+Cắm một board bằng cáp USB có truyền dữ liệu. Ví dụ board dùng COM5:
 
-This MVP is Wi-Fi sniffing only; BLE is intentionally not part of this first test.
+~~~powershell
+cd "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid"
+
+& "C:\Users\Admin\.platformio\penv\Scripts\platformio.exe" device list
+& "C:\Users\Admin\.platformio\penv\Scripts\platformio.exe" run -d firmware
+& "C:\Users\Admin\.platformio\penv\Scripts\platformio.exe" run -d firmware -t upload --upload-port COM5
+& "C:\Users\Admin\.platformio\penv\Scripts\platformio.exe" device monitor --port COM5 --baud 115200
+~~~
+
+Thay COM5 đúng cổng board. Nếu không thấy log, nhấn EN/RESET. Một số board cần
+giữ BOOT lúc uploader Connecting, thả khi bắt đầu ghi. Ctrl+C đóng Serial trước
+khi flash lại cổng đó.
+
+Cùng một firmware dùng cho cả 4 node. Flash thường giữ lại NVS cũ; không cần
+flash lại để đổi Wi-Fi, broker hoặc target.
+
+## 7. Cấu hình web AP → STA
+
+Khi chưa có cấu hình, Serial hiện dạng:
+
+~~~text
+[CONFIG] Provisioning AP=RF-Setup-... IP=192.168.4.1
+~~~
+
+1. Giữ hotspot điện thoại bật. Laptop tạm ngắt hotspot, kết nối RF-Setup-... của
+   một ESP. Chấp nhận mạng không có Internet.
+2. Mở http://192.168.4.1, nhập bảng bên dưới.
+3. Save and restart: ESP lưu NVS, trả response rồi reboot kết nối hotspot.
+4. Laptop kết nối lại hotspot; kiểm tra IPv4 chưa đổi.
+5. Ghi IP STA từ Serial; lần sau truy cập IP đó để sửa cấu hình.
+
+| Trường | Giá trị |
+|---|---|
+| node_id | ESP01, ESP02, ESP03 hoặc ESP04, riêng từng board |
+| wifi_ssid | V50 hoặc hotspot hiện tại |
+| wifi_password | Tự nhập mật khẩu hotspot |
+| mqtt_host | 192.168.87.160, thay nếu IP laptop đổi |
+| mqtt_port | 1883 |
+| session_id | session-dev-001, giống cả 4 node và Dashboard |
+| target_mac | 66:C2:DE:00:BE:87, thay nếu BSSID đổi |
+| capture_mode | target_only |
+| epoch_ms | 1000 |
+| sniff_window_ms | 700 |
+| mqtt_batch_max_samples | 16 |
+| mqtt_batch_max_bytes | 4096 |
+| web_admin_password | Tự đặt, ít nhất 8 ký tự |
+
+Không chọn Open Wi-Fi nếu hotspot có mật khẩu. Khi sửa qua form, để trống ô
+password để giữ giá trị cũ; chỉ chọn Open Wi-Fi khi muốn xóa mật khẩu Wi-Fi.
+Cấu hình lần lượt 4 board và dán nhãn để tránh trùng node_id.
+
+IP đã ghi lại từ lần chạy, có thể đổi theo DHCP:
+
+| Node | Trang cấu hình |
+|---|---|
+| ESP01 | http://192.168.87.208 |
+| ESP02 | http://192.168.87.103 |
+| ESP03 | http://192.168.87.49 |
+| ESP04 | http://192.168.87.61 |
+
+Đăng nhập user **admin**, password web đã tự đặt. README không lưu mật khẩu.
+GET /api/config và Export cũng không trả password.
+
+Nếu kết nối STA thất bại, sau ba đợt chờ khoảng 15 giây sẽ fallback AP, giữ NVS.
+Nếu quên admin/cấu hình, giữ BOOT/GPIO0 ít nhất 3 giây **sau khi chương trình đã
+boot** để factory reset. Không giữ BOOT ngay lúc cấp nguồn nếu muốn chạy bình
+thường. Factory reset xóa cấu hình; restart thường giữ NVS. Đổi session/target
+qua web sẽ save rồi reboot, không trộn batch cũ sang cấu hình mới.
+
+AP bootstrap ban đầu mở khi chưa đặt admin nên provision trong môi trường kiểm
+soát. Sau đó AP fallback và STA đều cần auth. HTTP/NVS mặc định không mã hóa
+secrets, dùng trong mạng tin cậy.
+
+## 8. Kiểm tra node và chạy Dashboard
+
+Mở http://IP-NODE/api/status, đăng nhập admin. Cả 4 node phải có:
+
+~~~text
+mode: STA
+wifi_connected: true
+mqtt_connected: true
+clock_synced: true
+~~~
+
+captured_sample_count tăng; queue không đầy liên tục. Theo dõi queue_drop_count,
+batch_drop_count, marker_drop_count, mqtt_publish_fail_count, free_heap và latency.
+Counters cộng dồn từ boot, không tự giảm khi sửa lỗi. Có thể restart sau khi
+broker ổn định để xem counters mới, rồi chờ NTP sync lại.
+
+ESP kết nối MQTT được khi **chỉ broker chạy**, chưa cần Gateway Python.
+Dashboard mở được cũng không chứng minh ESP đã vào MQTT.
+
+NTP giữ configTime với pool.ntp.org/time.nist.gov. Chưa sync thực sự thì Unix=0,
+clock_synced=false và Gateway chặn WCL. Laptop vào web được chưa bảo đảm NTP
+qua mạng đó được thông.
+
+Chạy Gateway theo mục 1 trong terminal riêng. Phân biệt:
+
+| Nơi cấu hình | MQTT host |
+|---|---|
+| ESP32 | IP Wi-Fi laptop, ví dụ 192.168.87.160 |
+| Gateway cùng laptop với broker | 127.0.0.1 |
+
+Khi thấy Uvicorn running, mở http://127.0.0.1:8000. Nhập kích thước phòng, kích
+thước ô và Session ID=session-dev-001, Apply room + grid. Cần thấy 4 node online,
+Nodes Used=4, vector đủ 4 RSSI, epoch tăng và quality complete.
+
+~~~text
+EPOCH session=session-dev-001 epoch=... status=complete overlap=...ms
+LOCALIZATION epoch=... nodes=4 vector={'ESP01': ..., 'ESP02': ..., 'ESP03': ..., 'ESP04': ...}
+~~~
+
+### Chọn đúng database và cấu hình môi trường
+
+Lệnh mục 1 dùng rf_gateway.db tại gốc project. Có thể đồng thời có
+gateway/rf_gateway.db từ cách chạy cũ. **Không coi chúng là bản sao hoặc tự xóa.**
+Muốn dùng lịch sử trong gateway thì đặt trước khi chạy:
+
+~~~powershell
+$env:DATABASE_PATH = "$PWD\gateway\rf_gateway.db"
+~~~
+
+Không tự hợp nhất hai database. Ghi rõ file nào dùng cho buổi đo.
+
+Có thể sao chép gateway/.env.example thành gateway/.env rồi chỉnh cấu hình;
+python-dotenv tìm .env theo cơ chế của thư viện, biến môi trường đã có được ưu
+tiên. Nếu dùng MAC, để TARGET_DEVICE_TOKEN trong .env trống vì token được ưu
+tiên hơn MAC. .env bị ignore để tránh commit secrets.
+
+scripts/start_gateway.bat dùng python của terminal: nếu dùng script, activate
+đúng venv và đặt biến trước. Lệnh trực tiếp ở mục 1 giúp rõ interpreter/cwd.
+
+## 9. Bố trí và đo thực tế
+
+~~~text
+ESP01 (0,0)                         ESP02 (width,0)
+      +-----------------------------+
+      |           vùng đo           |
+      +-----------------------------+
+ESP03 (0,length)               ESP04 (width,length)
+~~~
+
+1. Cố định 4 node ở bốn góc, nguồn ổn định, độ cao/hướng anten tương đối thống nhất.
+   Giữ laptop cố định, tránh anten sát kim loại.
+2. Đo kích thước phòng thật và nhập Dashboard. Gốc tọa độ ở ESP01.
+3. Đánh dấu khoảng 5 điểm, ghi tọa độ thật (giữa phòng và các điểm xung quanh).
+4. Đặt điện thoại tại mỗi điểm, giữ độ cao/hướng tương tự; chờ ổn định khoảng
+   10 giây rồi thu 30–60 giây. Ghi epoch bắt đầu/kết thúc từ Dashboard.
+5. Giữ mức sử dụng mạng tương đối giống nhau, hotspot và cả 5 client kết nối ổn
+   định. Không đổi cấu hình/session giữa đoạn đo.
+6. Ghi ground truth riêng, ví dụ CSV:
+   session_id,point_id,x_m,y_m,start_epoch,end_epoch.
+   Gateway chưa tự nhập nhãn này, người đo ghi để ghép khi phân tích.
+
+Confidence trên UI không phải phần trăm độ chính xác thực tế. WCL dùng median
+RSSI, weight_i=10^((RSSI_i-max_RSSI)/10), không phải mô hình khoảng cách đã hiệu
+chuẩn. Đánh giá bằng so tọa độ ước lượng với ground truth.
+
+ESP32 chỉ có một radio: hai core không bảo đảm thu 100% frame khi truyền MQTT.
+Queue drops chỉ đo mất mẫu phía phần mềm; mất frame trước callback cần nguồn
+phát/reference capture có số frame biết trước mới đánh giá được.
+
+## 10. Xuất dữ liệu và kết thúc
+
+Giữ Gateway chạy khi xuất, mở terminal khác:
+
+~~~powershell
+cd "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid"
+
+Invoke-WebRequest "http://127.0.0.1:8000/api/v1/raw/export?session_id=session-dev-001" -OutFile "raw_session-dev-001.jsonl"
+
+Invoke-WebRequest "http://127.0.0.1:8000/api/v1/epochs/quality?limit=200" -OutFile "quality_latest_200.json"
+~~~
+
+JSONL giữ raw chunks theo session, từng mẫu RSSI/timestamp/token. File quality
+chỉ lấy **200 epoch gần nhất**, database giữ quality đã lưu.
+
+Giữ JSONL, đúng database đã dùng, ground truth và ghi chú bố trí. Xuất xong
+Ctrl+C dừng Gateway; nếu copy database hãy đợi Gateway thoát hẳn để tránh còn
+đang ghi. Sau đó Ctrl+C dừng broker.
+
+Buổi mới nên đổi session trên cả 4 node và Dashboard, ví dụ session-do-002,
+đổi session_id trong URL export cho khớp. Có thể dùng chung database hoặc
+chọn file mới nhưng phải ghi rõ file/session của buổi đo.
+
+## 11. Lỗi đã gặp
+
+| Hiện tượng | Xử lý |
+|---|---|
+| Không nhận .\.venv\Scripts\python.exe | cd vào project, không đứng ở do an. Nếu vẫn thiếu, kiểm tra venv có bị xóa dở không. |
+| Không có uvicorn/fastapi | Cài gateway/requirements.txt bằng đúng python.exe của .venv. |
+| Xóa venv Access denied | Dừng Gateway đang khóa file; deactivate không đủ. Sau đó xóa phần còn lại và tạo lại. |
+| MQTT false, Wi-Fi/NTP true | Kiểm tra mqtt_host là IP laptop, broker nghe LAN, cổng/firewall. |
+| Broker chỉ nghe 127.0.0.1 | Dừng dịch vụ/instance chiếm cổng, chạy với -c scripts/mosquitto.conf. |
+| Address already in use | Có broker khác dùng 1883; kiểm tra netstat, dừng đúng instance. |
+| Queue 512/512, drops tăng | Chưa đo. Sửa kết nối/tải publisher; quan sát sau restart và sync lại. Không tăng buffer để che lỗi. |
+| IP node không mở được | Kiểm tra laptop cùng hotspot, IP STA mới trong Serial hoặc node đã fallback AP. |
+| 4 node online nhưng chưa có vị trí | Xem /api/v1/epochs/quality; online không đồng nghĩa vector hợp lệ. |
+| missing_node | Node/session/target không khớp hoặc node không thấy target. |
+| missing_chunk | Kiểm tra MQTT, tải truyền và counters. |
+| unsynced | Kiểm tra NTP từng node. |
+| low_overlap | Kiểm tra cùng epoch/window và thời gian mở window; không hạ ngưỡng chỉ để có vị trí. |
+| empty_target | Kiểm tra BSSID hiện tại và target_only trên các node. |
+| Lịch sử không đúng | Kiểm tra Session ID và DATABASE_PATH, có thể đang mở database khác. |
+
+Nếu cùng hotspot, listener/firewall đều đúng nhưng ESP vẫn không vào broker,
+kiểm chứng hotspot có hạn chế liên lạc giữa các client hay không; cần mạng
+cho phép client liên lạc. Laptop vào Internet không đủ để kết luận.
+
+## 12. Source và quy tắc xử lý
+
+~~~text
+rf_localization_mvp_node_grid/
+  README.md
+  firmware/
+    platformio.ini
+    src/config.h
+    src/main.cpp
+    src/web_config.h
+    src/web_config.cpp
+  gateway/
+    .env.example
+    requirements.txt
+    __init__.py
+    config.py
+    models.py
+    mqtt_ingest.py
+    epoch_reconstructor.py
+    localization.py
+    database.py
+    main.py
+    static/index.html
+  scripts/
+    mosquitto.conf
+    start_mqtt.bat
+    start_gateway.bat
+~~~
+
+Ngoài source còn có .venv, build cache, database và backup cục bộ tùy máy.
+Database là dữ liệu đo, không phải file build thừa.
+
+- Callback Wi-Fi do ESP-IDF quản lý → queue nonblocking → publisher Core 1 trên
+  dual-core (Core 0 nếu UNICORE). ESP không tính median/mean/MAD; giữ SNTP,
+  STA + promiscuous và MQTT QoS 0.
+- Track transmitter address (TA), phân biệt với source logic: RSSI thuộc thiết bị
+  thực sự phát radio. TA của management/data hỗ trợ là addr2, source có thể ở
+  addr3/addr4. AP uplink chỉ được theo dõi khi là target.
+- Token là SHA256(MAC bytes + salt); salt giống cả 4 node và Gateway. MAC có thể
+  ngẫu nhiên, không là danh tính vật lý vĩnh viễn.
+- Topic rf/v1/nodes/{node_id}/observation, schema_version=2. Mỗi mẫu có token,
+  rssi_dbm, channel, frame_type/subtype, capture_mono_us và capture_unix_ms.
+  Batch có session/node/epoch, epoch_ms, clock_synced, cửa sổ UTC, chunk_index/
+  chunk_count và counters. Empty epoch có observations rỗng.
+- Queue 512 records, buffer 512 mẫu/epoch; mặc định 16 mẫu/chunk, 4096 JSON bytes.
+  Chia theo cả mẫu/byte. Window bị ngắt hoặc mất marker không coi là hoàn tất.
+  Mẫu vượt giới hạn/publish lỗi được đếm; không có backlog vô hạn.
+- Gateway lưu raw trước thống kê, dedup session/epoch/node/chunk, ghép đủ chunks,
+  tính count/median/mean/MAD/min/max, dùng median cho WCL.
+- Strict_4: đủ ESP01–04, synced, cùng epoch duration, overlap >=600 ms mặc định;
+  timeout 1800 ms. Overlap=max(0,min(end)-max(start)). Không điền RSSI thiếu.
+  Tombstone SQLite chặn phát lại epoch đóng; buffer pending chưa đủ cần message
+  gửi lại sau restart. V1 chỉ chẩn đoán; NODE_READY giữ v1.
+
+API node: GET /, /api/status, /api/config; POST /api/config, /api/restart,
+ /api/factory-reset. Factory reset cần confirm="factory-reset" trong JSON.
+API Gateway: GET /health, /api/v1/nodes, /api/v1/room,
+/api/v1/localization/latest, /api/v1/epochs/quality, /api/v1/raw/export;
+POST /api/v1/room; WebSocket /ws/v1/sessions/{session_id}.
+
+## 13. Ghi chú dọn project và khôi phục
+
+Đã gom tài liệu vào README này, chuyển bảng IP, bỏ tài liệu rời/trùng, test,
+simulator, dependencies test, payload mẫu và cache Python. Giữ source chạy,
+cấu hình, .venv, database và dữ liệu đo.
+
+Bản sao README cũ cùng tài liệu/test bị xóa nằm tại
+**.local-backup/cleanup-20261102.zip**, giữ đúng đường dẫn tương đối để lấy riêng
+từng file khôi phục. Cấu hình trước refactor còn ở
+.local-backup/config.before-refactor.h nếu có. Backup có thể chứa mật khẩu trong
+ghi chú cũ; chỉ giữ cục bộ, không chia sẻ/commit. Cache tự sinh lại khi chạy.
+
+Trước khi gỡ test, bản refactor đã build esp32dev và qua 23 test, gồm Mosquitto
+loopback → SQLite → HTTP/WebSocket. Người dùng xác nhận hệ thống chạy được sau
+khi sửa broker listener. Đây không phải báo cáo sai số định vị hay tỷ lệ mất
+frame đo thật; cần buổi đo có ground truth theo mục 9.

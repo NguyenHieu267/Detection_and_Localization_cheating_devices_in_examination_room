@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pio/
+.local-backup/
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+.env
+.venv/

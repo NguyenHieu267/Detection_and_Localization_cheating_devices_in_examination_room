@@ -257,7 +257,7 @@ function renderResult(r) {
   $('confidence').textContent=(Number(r.confidence)*100).toFixed(0)+'%';
   $('epoch').textContent=r.epoch_id;
   $('vector').innerHTML=Object.entries(r.rssi_vector_dbm || {})
-    .map(([k,v])=>`${k}: ${Number(v).toFixed(2)} dBm`)
+    .map(([k,v])=>`${k}: ${Number(v).toFixed(2)} dBm · n=${r.node_packet_count?.[k] ?? '?'} · drops=${r.queue_drop_count?.[k] ?? '?'}`)
     .join('<br>') || '—';
 }
 
@@ -281,7 +281,15 @@ function connect() {
     $('status').className='warn';
   };
   ws.onmessage=e=>{
-    try { renderResult(JSON.parse(e.data)); } catch(_) {}
+    try {
+      const r=JSON.parse(e.data);
+      if(r.message_type==='EPOCH_QUALITY') {
+        $('status').textContent=`Epoch ${r.epoch_id}: ${r.status} · overlap ${r.overlap_ms} ms`;
+        $('status').className=r.status==='complete'?'ok':'warn';
+        return;
+      }
+      renderResult(r);
+    } catch(_) {}
   };
 }
 

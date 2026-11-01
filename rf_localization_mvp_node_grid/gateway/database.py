@@ -32,6 +32,23 @@ class Database:
                     PRIMARY KEY(session_id, epoch_id, device_token)
                 );
 
+                CREATE TABLE IF NOT EXISTS raw_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    epoch_id INTEGER NOT NULL,
+                    node_id TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    received_at_ms INTEGER NOT NULL,
+                    UNIQUE(session_id, epoch_id, node_id, chunk_index)
+                );
+                CREATE TABLE IF NOT EXISTS epoch_quality (
+                    session_id TEXT NOT NULL,
+                    epoch_id INTEGER NOT NULL,
+                    quality_json TEXT NOT NULL,
+                    PRIMARY KEY(session_id, epoch_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS localization_updates (
                     session_id TEXT NOT NULL,
                     epoch_id INTEGER NOT NULL,
@@ -87,6 +104,49 @@ class Database:
     def close(self) -> None:
         with self.lock:
             self.conn.close()
+
+    def store_raw_chunk(self, report) -> None:
+        with self.lock, self.conn:
+            existing = self.conn.execute(
+                "SELECT payload_json FROM raw_chunks WHERE session_id=? AND epoch_id=? AND node_id=? AND chunk_index=?",
+                (report.session_id, report.epoch_id, report.node_id, report.chunk_index)).fetchone()
+            if existing and json.loads(existing[0]) != report.model_dump():
+                raise ValueError("conflicting persisted chunk")
+            self.conn.execute(
+                "INSERT OR IGNORE INTO raw_chunks(session_id,epoch_id,node_id,chunk_index,payload_json,received_at_ms) VALUES(?,?,?,?,?,?)",
+                (report.session_id, report.epoch_id, report.node_id, report.chunk_index,
+                 report.model_dump_json(), int(time.time() * 1000)))
+
+    def store_quality(self, quality: dict) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("INSERT OR IGNORE INTO epoch_quality VALUES(?,?,?)",
+                              (quality["session_id"], quality["epoch_id"], json.dumps(quality)))
+
+    def epoch_closed(self, session_id: str, epoch_id: int) -> bool:
+        with self.lock:
+            return self.conn.execute("SELECT 1 FROM epoch_quality WHERE session_id=? AND epoch_id=?",
+                                     (session_id, epoch_id)).fetchone() is not None
+
+    def latest_quality(self, limit: int = 50) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute("SELECT quality_json FROM epoch_quality ORDER BY rowid DESC LIMIT ?", (limit,)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def export_raw(self, session_id: str):
+        """Bounded pages; JSONL keeps exact raw samples and per-chunk diagnostics."""
+        after = 0
+        with self.lock:
+            upper = self.conn.execute("SELECT COALESCE(MAX(id),0) FROM raw_chunks").fetchone()[0]
+        while after < upper:
+            with self.lock:
+                rows = self.conn.execute(
+                    "SELECT id,payload_json FROM raw_chunks WHERE session_id=? AND id>? AND id<=? ORDER BY id LIMIT 100",
+                    (session_id, after, upper)).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                yield row["payload_json"] + "\n"
+            after = rows[-1]["id"]
 
     def upsert_node_ready(self, *, node_id: str, session_id: str, timestamp_ms: int) -> None:
         with self.lock, self.conn:
@@ -253,5 +313,14 @@ class Database:
             item = dict(row)
             item["rssi_vector_dbm"] = json.loads(item.pop("rssi_vector_json"))
             item["timestamp_ms"] = item.pop("created_at_ms")
+            with self.lock:
+                quality_row = self.conn.execute("SELECT quality_json FROM epoch_quality WHERE session_id=? AND epoch_id=?",
+                    (item["session_id"], item["epoch_id"])).fetchone()
+            if quality_row:
+                q = json.loads(quality_row[0])
+                item["sync_status"] = q["tokens"].get(item["track_id"], q["status"])
+                item["overlap_ms"] = q["overlap_ms"]
+                item["queue_drop_count"] = q["queue_drop_count"]
+                item["node_packet_count"] = {n: s["packet_count"] for n, s in q["node_stats"].get(item["track_id"], {}).items()}
             result.append(item)
         return result

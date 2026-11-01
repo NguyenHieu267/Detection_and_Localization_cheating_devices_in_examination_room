@@ -42,6 +42,8 @@ class Settings:
 
     # Epoch reconstruction.
     epoch_timeout_ms: int = int(os.getenv("EPOCH_TIMEOUT_MS", "1800"))
+    min_overlap_ms: int = int(os.getenv("MIN_OVERLAP_MS", "600"))
+    max_mqtt_bytes: int = 65536
 
     # SQLite.
     database_path: str = os.getenv("DATABASE_PATH", "rf_gateway.db")
@@ -126,6 +128,8 @@ def build_settings(
         observation_topic=base.observation_topic,
         ready_topic=base.ready_topic,
         epoch_timeout_ms=base.epoch_timeout_ms,
+        min_overlap_ms=base.min_overlap_ms,
+        max_mqtt_bytes=base.max_mqtt_bytes,
         database_path=base.database_path,
         room_width_m=float(room_width_m),
         room_length_m=float(room_length_m),

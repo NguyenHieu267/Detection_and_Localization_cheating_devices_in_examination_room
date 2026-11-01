@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from config import Settings
 from epoch_reconstructor import EpochReconstructor
-from models import EpochObservation, NodeReady
+from models import EpochObservation, NodeReady, RawEpochObservation
 
 logger = logging.getLogger(__name__)
 
@@ -65,24 +65,29 @@ class MqttGateway:
 
     def _on_message(self, client, userdata, msg) -> None:
         try:
+            if len(msg.payload) > self.settings.max_mqtt_bytes:
+                raise ValueError("MQTT payload exceeds limit")
             payload = json.loads(msg.payload.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("payload must be an object")
             topic_parts = msg.topic.split("/")
-            topic_node_id = topic_parts[3] if len(topic_parts) == 5 else None
-            message_type = payload.get("message_type")
+            message_type = payload.get("message_type", "EPOCH_OBSERVATION" if payload.get("schema_version") == 2 else None)
 
             if message_type == "EPOCH_OBSERVATION":
-                report = EpochObservation.model_validate(payload)
-                if topic_node_id != report.node_id:
+                model = RawEpochObservation if payload.get("schema_version") == 2 else EpochObservation
+                report = model.model_validate(payload)
+                if topic_parts != ["rf", "v1", "nodes", report.node_id, "observation"]:
                     raise ValueError("topic node_id does not match payload node_id")
                 self.on_node_seen(report.node_id, report.session_id, "EPOCH_OBSERVATION")
                 self.reconstructor.add(report)
             elif message_type == "NODE_READY":
                 ready = NodeReady.model_validate(payload)
-                if topic_node_id != ready.node_id:
+                if topic_parts != ["rf", "v1", "nodes", ready.node_id, "ready"]:
                     raise ValueError("topic node_id does not match payload node_id")
                 self.on_node_seen(ready.node_id, ready.session_id, "NODE_READY")
                 self.on_node_ready(ready)
             else:
                 logger.warning("Unsupported message_type=%r on %s", message_type, msg.topic)
         except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError) as exc:
-            logger.warning("MQTT message rejected on %s: %s", msg.topic, exc)
+            # Pydantic error strings may echo arbitrary input, including secrets.
+            logger.warning("MQTT message rejected on %s (%s)", msg.topic, type(exc).__name__)

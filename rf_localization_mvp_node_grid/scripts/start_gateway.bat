@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0gateway"
+cd /d "%~dp0..\gateway"
 echo Starting RF Localization Gateway...
 python main.py
 echo.

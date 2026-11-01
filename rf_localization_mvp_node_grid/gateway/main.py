@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from config import DEFAULT_SETTINGS, EXPECTED_NODE_IDS, Settings, build_settings
 from database import Database
@@ -88,6 +88,10 @@ class GatewayRuntime:
             expected_nodes=set(EXPECTED_NODE_IDS),
             timeout_ms=self.settings.epoch_timeout_ms,
             on_complete=self.on_unified_epoch,
+            min_overlap_ms=self.settings.min_overlap_ms,
+            on_raw=self.database.store_raw_chunk,
+            on_quality=self.on_epoch_quality,
+            is_closed=self.database.epoch_closed,
         )
         self.mqtt = MqttGateway(
             self.settings,
@@ -214,6 +218,9 @@ class GatewayRuntime:
                 nodes_used=estimate.nodes_used,
                 rssi_vector_dbm=node_rssi,
                 timestamp_ms=created_at_ms,
+                node_packet_count=node_packet_count,
+                queue_drop_count=self.reconstructor.last_quality.get("queue_drop_count", {}),
+                overlap_ms=self.reconstructor.last_quality.get("overlap_ms", 0),
             )
 
             self.database.upsert_localization_update(
@@ -235,9 +242,17 @@ class GatewayRuntime:
                     self.ws_manager.loop,
                 )
             logger.info(
-                "LOCALIZATION epoch=%s token=%s zone=%s x=%.2f y=%.2f nodes=%d",
-                epoch_id, device_token[:10], result.zone_id, result.x_m, result.y_m, result.nodes_used,
+                "LOCALIZATION epoch=%s token=%s zone=%s x=%.2f y=%.2f nodes=%d vector=%s",
+                epoch_id, device_token[:10], result.zone_id, result.x_m, result.y_m, result.nodes_used, node_rssi,
             )
+
+    def on_epoch_quality(self, quality: dict) -> None:
+        self.database.store_quality(quality)
+        logger.info("EPOCH session=%s epoch=%s status=%s overlap=%dms",
+                    quality["session_id"], quality["epoch_id"], quality["status"], quality["overlap_ms"])
+        if self.ws_manager.loop is not None:
+            asyncio.run_coroutine_threadsafe(self.ws_manager.broadcast(
+                {"message_type": "EPOCH_QUALITY", **quality}), self.ws_manager.loop)
 
 
 runtime = GatewayRuntime()
@@ -275,6 +290,9 @@ async def health() -> dict[str, Any]:
     grid = runtime.settings.grid
     return {
         "status": "ok",
+        "vector_mode": "strict_4",
+        "min_overlap_ms": runtime.settings.min_overlap_ms,
+        "epoch_counters": dict(runtime.reconstructor.counters),
         "mqtt_connected": runtime.mqtt.connected,
         "expected_nodes": list(EXPECTED_NODE_IDS),
         "nodes": runtime.node_status(),
@@ -295,6 +313,17 @@ async def health() -> dict[str, Any]:
 @app.get("/api/v1/nodes")
 async def get_nodes() -> list[dict[str, Any]]:
     return runtime.node_status()
+
+
+@app.get("/api/v1/epochs/quality")
+async def epoch_quality(limit: int = 50):
+    return runtime.database.latest_quality(min(max(limit, 1), 200))
+
+
+@app.get("/api/v1/raw/export")
+def export_raw(session_id: str):
+    return StreamingResponse(runtime.database.export_raw(session_id), media_type="application/x-ndjson",
+                             headers={"Content-Disposition": 'attachment; filename="raw-rssi.jsonl"'})
 
 
 @app.get("/api/v1/room")
