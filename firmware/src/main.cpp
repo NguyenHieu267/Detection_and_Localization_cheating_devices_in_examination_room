@@ -10,7 +10,6 @@
 #include <atomic>
 #include "web_config.h"
 
-namespace {
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 QueueHandle_t observationQueue;
@@ -235,7 +234,6 @@ void captureControl() {
     captureOpen = true; lastEpoch = epoch; lastSynced = synced;
   }
   portEXIT_CRITICAL(&captureMux);
-}
 }
 
 void fillStatus(JsonDocument &d) {

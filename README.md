@@ -30,7 +30,7 @@ $env:MQTT_HOST = "127.0.0.1"
 $env:MQTT_PORT = "1883"
 $env:TARGET_DEVICE_MAC = "66:C2:DE:00:BE:87"
 $env:TARGET_DEVICE_TOKEN = ""
-$env:DEVICE_TOKEN_SALT = "rf-mvp-shared-salt-change-me"
+$env:DEVICE_TOKEN_SALT = "secret-key"
 $env:LOCALIZE_TARGET_ONLY = "true"
 $env:MIN_OVERLAP_MS = "600"
 $env:EPOCH_TIMEOUT_MS = "1800"
@@ -268,7 +268,6 @@ Khi chưa có cấu hình, Serial hiện dạng:
 | sniff_window_ms | 700 |
 | mqtt_batch_max_samples | 16 |
 | mqtt_batch_max_bytes | 4096 |
-| web_admin_password | Tự đặt, ít nhất 8 ký tự |
 
 Không chọn Open Wi-Fi nếu hotspot có mật khẩu. Khi sửa qua form, để trống ô
 password để giữ giá trị cũ; chỉ chọn Open Wi-Fi khi muốn xóa mật khẩu Wi-Fi.
@@ -283,22 +282,26 @@ IP đã ghi lại từ lần chạy, có thể đổi theo DHCP:
 | ESP03 | http://192.168.87.49 |
 | ESP04 | http://192.168.87.61 |
 
-Đăng nhập user **admin**, password web đã tự đặt. README không lưu mật khẩu.
-GET /api/config và Export cũng không trả password.
+Trang cấu hình không yêu cầu đăng nhập trên cả AP và STA. Mật khẩu Wi-Fi vẫn
+được lưu trong NVS; GET /api/config và Export không trả mật khẩu này.
 
 Nếu kết nối STA thất bại, sau ba đợt chờ khoảng 15 giây sẽ fallback AP, giữ NVS.
-Nếu quên admin/cấu hình, giữ BOOT/GPIO0 ít nhất 3 giây **sau khi chương trình đã
+Nếu cần xóa cấu hình, giữ BOOT/GPIO0 ít nhất 3 giây **sau khi chương trình đã
 boot** để factory reset. Không giữ BOOT ngay lúc cấp nguồn nếu muốn chạy bình
 thường. Factory reset xóa cấu hình; restart thường giữ NVS. Đổi session/target
 qua web sẽ save rồi reboot, không trộn batch cũ sang cấu hình mới.
 
-AP bootstrap ban đầu mở khi chưa đặt admin nên provision trong môi trường kiểm
-soát. Sau đó AP fallback và STA đều cần auth. HTTP/NVS mặc định không mã hóa
-secrets, dùng trong mạng tin cậy.
+Web config không có mật khẩu: người truy cập được IP ESP có thể sửa cấu hình,
+restart hoặc factory reset khi xác nhận. Chỉ dùng trong mạng tin cậy. Kiểm tra
+Origin, JSON, input validation và xác nhận factory reset vẫn được giữ.
+
+Cấu hình NVS cũ vẫn đọc được sau khi flash bản bỏ đăng nhập; không cần reset
+Wi-Fi/session/target. Nhấn Save một lần để ghi lại blob NVS không còn trường
+mật khẩu admin cũ. Ô Wi-Fi password để trống trên form sẽ giữ mật khẩu đã lưu.
 
 ## 8. Kiểm tra node và chạy Dashboard
 
-Mở http://IP-NODE/api/status, đăng nhập admin. Cả 4 node phải có:
+Mở trực tiếp http://IP-NODE/api/status, không cần đăng nhập. Cả 4 node phải có:
 
 ~~~text
 mode: STA
@@ -603,6 +606,11 @@ Publisher được pin Core 1 trên dual-core; Arduino loop giữ cấu hình co
 framework, không có Capture Task riêng pin Core 0 trong code hiện tại.
 Queue tách công việc giữa các luồng; không tạo thêm radio Wi-Fi thứ hai.
 
+Hai file .cpp hiện không còn khối anonymous namespace { }. Các biến/hàm trước
+đây nằm trong khối đó giờ ở phạm vi toàn cục; phải tránh trùng tên giữa các file.
+Thay đổi này không bỏ task hoặc đổi luồng capture/publish. Từ namespace trong
+NVS rf-node là vùng lưu cấu hình, không phải khối namespace C++ vừa bỏ.
+
 ### 13.4. Timestamp và epoch
 
 esp_timer_get_time() trả microseconds từ lúc chip chạy, riêng từng node.
@@ -722,7 +730,7 @@ Confidence là chỉ số heuristic, không phải xác suất đúng đã hiệ
 | firmware/platformio.ini | Chọn board/framework/toolchain và ArduinoJson/PubSubClient | Máy build/flash |
 | firmware/src/config.h | Hằng số bộ nhớ/NTP/salt/GPIO, struct NodeConfig và mặc định | ESP32 |
 | firmware/src/web_config.h | Khai báo hàm/biến dùng chung giữa hai file .cpp | ESP32, lúc compile |
-| firmware/src/web_config.cpp | NVS, HTTP auth/validation, API và trang cấu hình nhúng | ESP32 + JS trên browser |
+| firmware/src/web_config.cpp | NVS, HTTP validation, API và trang cấu hình nhúng không đăng nhập | ESP32 + JS trên browser |
 | firmware/src/main.cpp | Wi-Fi/SNTP, sniffer, queue, window, publisher, setup/loop | ESP32 |
 | firmware/.gitignore | Bỏ qua file build theo cấu hình firmware | Git |
 | firmware/.vscode/extensions.json | Gợi ý extension cho editor, không thuộc runtime | VS Code |
@@ -783,11 +791,11 @@ từ lúc nhận frame đến khi browser hiển thị.
 |---|---|
 | toJson(d,c,secrets) | Chuyển NodeConfig sang JSON. secrets=true khi lưu NVS; false khi GET/export để không lộ password. |
 | validMac(s) | Kiểm tra đúng 17 ký tự dạng XX:XX:XX:XX:XX:XX, hex hợp lệ, unicast và khác MAC toàn 0. |
-| valid(c) | Kiểm tra toàn bộ cấu hình: node ID, SSID/password, broker/port, session, target/mode, epoch/window, batch limits, admin password. Không kiểm chứng được node_id có trùng board khác trên mạng hay không. |
+| valid(c) | Kiểm tra toàn bộ cấu hình: node ID, SSID/password Wi-Fi, broker/port, session, target/mode, epoch/window, batch limits. Không kiểm chứng được node_id có trùng board khác trên mạng hay không. |
 | apply(d,c) | Đọc các trường JSON có gửi, giữ giá trị cũ cho trường bỏ qua; kiểm tra kiểu, chuẩn hóa MAC in hoa rồi valid(c). Áp dụng vào bản candidate, không sửa cấu hình callback đang dùng. |
-| authorized() | Từ chối khi đã hẹn reboot; cho bootstrap trên AP chưa có admin; còn lại kiểm tra HTTP Basic admin và trả challenge nếu sai. |
+| requestAllowed() | Chỉ từ chối request khi đã hẹn reboot để tránh ghi tiếp giữa lúc sắp restart. Không kiểm tra đăng nhập hoặc gửi HTTP Basic challenge. |
 | sendJson(d) | Serialize JSON trả HTTP 200, Content-Type JSON, Cache-Control no-store. |
-| body(d) | Kiểm tra auth, Origin/Content-Type, body <=2048 ký tự và JSON object hợp lệ. Các route POST gọi trước khi xử lý. |
+| body(d) | Kiểm tra requestAllowed, Origin/Content-Type, body <=2048 ký tự và JSON object hợp lệ. Các route POST gọi trước khi xử lý. |
 | loadConfig() | Đọc blob config trong namespace NVS rf-node, kiểm tra schema=1 và valid; hợp lệ mới thay nodeConfig mặc định. |
 | factoryResetConfig() | Xóa namespace NVS rf-node; caller chịu trách nhiệm trả response/reboot. |
 | startWebConfig() | Đăng ký các route, thu thập headers cần kiểm tra, bắt đầu WebServer cổng 80. |
@@ -800,9 +808,9 @@ NodeConfig và các hằng số ở config.h không phải hàm. web_config.h ch
 
 | Route | Hành động |
 |---|---|
-| GET / | Auth rồi trả HTML PAGE nằm trong flash ESP32. |
-| GET /api/config | Auth rồi toJson(...,false), không trả mật khẩu. |
-| GET /api/status | Auth rồi gọi fillStatus và sendJson. |
+| GET / | Kiểm tra không chờ reboot rồi trả HTML PAGE nằm trong flash ESP32, không cần đăng nhập. |
+| GET /api/config | requestAllowed rồi toJson(...,false), không trả mật khẩu Wi-Fi. |
+| GET /api/status | requestAllowed rồi gọi fillStatus và sendJson. |
 | POST /api/config | body → tạo candidate → apply/valid → serialize có secrets → ghi một blob NVS → trả success → hẹn reboot sau khoảng 1 giây. |
 | POST /api/restart | body → trả success → hẹn reboot. |
 | POST /api/factory-reset | body → bắt buộc confirm=factory-reset → xóa NVS → trả success → hẹn reboot. |
@@ -815,7 +823,7 @@ reboot sẽ gọi loadConfig đọc bản mới, tránh trộn session/target c�
 | Hàm | Chức năng |
 |---|---|
 | call(path,data) | GET /api/path nếu không có data; có data thì POST JSON; kiểm tra HTTP thành công rồi đọc JSON. |
-| init() | Lấy config không secrets, sinh input từ các trường, thêm ô password rỗng và đọc Status ban đầu. |
+| init() | Lấy config không secrets, sinh input từ các trường, thêm ô Wi-Fi password rỗng và đọc Status ban đầu. Không có ô mật khẩu admin. |
 | status() | GET status và in JSON/lỗi lên vùng kết quả. |
 | save() | Lấy form, đổi trường number, bỏ qua ô password trống để giữ cũ; checkbox Open Wi-Fi thì gửi password rỗng; POST config. |
 | action(a) | Hỏi confirm cho restart/factory-reset, POST confirm=a. |

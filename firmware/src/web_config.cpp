@@ -5,22 +5,27 @@
 #include "web_config.h"
 
 NodeConfig nodeConfig;
-bool provisioning = false;
-namespace {
+bool provisioning = false;      // Đang ở chế độ STA hay AP
 WebServer server(80);
 uint32_t rebootAt = 0;
 constexpr int CONFIG_SCHEMA = 1;
 
+// Điền JSON từ c -> d
 void toJson(JsonDocument &d, const NodeConfig &c, bool secrets) {
   d["config_schema"] = CONFIG_SCHEMA;
-  d["node_id"] = c.nodeId; d["wifi_ssid"] = c.ssid;
-  d["mqtt_host"] = c.mqttHost; d["mqtt_port"] = c.mqttPort;
-  d["session_id"] = c.sessionId; d["target_mac"] = c.targetMac;
-  d["capture_mode"] = c.captureMode; d["epoch_ms"] = c.epochMs;
+  d["node_id"] = c.nodeId;
+  d["wifi_ssid"] = c.ssid;
+  d["mqtt_host"] = c.mqttHost;
+  d["mqtt_port"] = c.mqttPort;
+  d["session_id"] = c.sessionId;
+  d["target_mac"] = c.targetMac;
+  d["capture_mode"] = c.captureMode;
+  d["epoch_ms"] = c.epochMs;
   d["sniff_window_ms"] = c.sniffWindowMs;
-  d["mqtt_batch_max_samples"] = c.batchSamples; d["mqtt_batch_max_bytes"] = c.batchBytes;
+  d["mqtt_batch_max_samples"] = c.batchSamples;
+  d["mqtt_batch_max_bytes"] = c.batchBytes;
   if (secrets) {
-    d["wifi_password"] = c.wifiPassword; d["web_admin_password"] = c.adminPassword;
+    d["wifi_password"] = c.wifiPassword;
   }
 }
 
@@ -43,12 +48,11 @@ bool valid(const NodeConfig &c) {
   if (c.captureMode != "target_only" && c.captureMode != "all") return false;
   if ((c.captureMode == "target_only" || !c.targetMac.isEmpty()) && !validMac(c.targetMac)) return false;
   return c.epochMs >= 100 && c.epochMs <= 60000 && c.sniffWindowMs >= 50 && c.sniffWindowMs <= c.epochMs &&
-         c.batchSamples >= 1 && c.batchSamples <= 64 && c.batchBytes >= 1024 && c.batchBytes <= 8192 &&
-         c.adminPassword.length() >= 8 && c.adminPassword.length() <= 64;
+         c.batchSamples >= 1 && c.batchSamples <= 64 && c.batchBytes >= 1024 && c.batchBytes <= 8192;
 }
 
 bool apply(JsonDocument &d, NodeConfig &c) {
-  const char *strings[] = {"node_id", "wifi_ssid", "wifi_password", "mqtt_host", "session_id", "target_mac", "capture_mode", "web_admin_password"};
+  const char *strings[] = {"node_id", "wifi_ssid", "wifi_password", "mqtt_host", "session_id", "target_mac", "capture_mode"};
   for (const char *key : strings) if (!d[key].isNull() && !d[key].is<String>()) return false;
   const char *numbers[] = {"mqtt_port", "epoch_ms", "sniff_window_ms", "mqtt_batch_max_samples", "mqtt_batch_max_bytes"};
   for (const char *key : numbers) if (!d[key].isNull() && (!d[key].is<uint32_t>() || d[key].as<uint32_t>() > 65535)) return false;
@@ -59,16 +63,12 @@ bool apply(JsonDocument &d, NodeConfig &c) {
   c.targetMac.toUpperCase(); c.captureMode = d["capture_mode"] | c.captureMode;
   c.epochMs = d["epoch_ms"] | c.epochMs; c.sniffWindowMs = d["sniff_window_ms"] | c.sniffWindowMs;
   c.batchSamples = d["mqtt_batch_max_samples"] | c.batchSamples; c.batchBytes = d["mqtt_batch_max_bytes"] | c.batchBytes;
-  c.adminPassword = d["web_admin_password"] | c.adminPassword;
   return valid(c);
 }
 
-bool authorized() {
+bool requestAllowed() {
   if (rebootAt) { server.send(503, "application/json", "{\"error\":\"restart pending\"}"); return false; }
-  // First-use bootstrap is available only on the provisioning AP, before an admin exists.
-  if (provisioning && nodeConfig.adminPassword.isEmpty()) return true;
-  if (server.authenticate("admin", nodeConfig.adminPassword.c_str())) return true;
-  server.requestAuthentication(); return false;
+  return true;
 }
 
 void sendJson(JsonDocument &d) {
@@ -77,7 +77,7 @@ void sendJson(JsonDocument &d) {
 }
 
 bool body(JsonDocument &d) {
-  if (!authorized()) return false;
+  if (!requestAllowed()) return false;
   const String origin = server.header("Origin");
   if ((!origin.isEmpty() && origin != "http://" + server.hostHeader()) ||
       !server.header("Content-Type").startsWith("application/json")) {
@@ -91,20 +91,19 @@ bool body(JsonDocument &d) {
 
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html><meta name="viewport" content="width=device-width"><title>RF node configuration</title>
 <style>body{font:16px system-ui;max-width:700px;margin:30px auto;padding:16px}label{display:block;margin:12px 0}input,select{float:right;max-width:60%}button{margin:8px;padding:10px}pre{white-space:pre-wrap}</style>
-<h1>RF node</h1><p>STA: sign in as <b>admin</b>. First provisioning: set an admin password. Empty password inputs keep the saved values; select open Wi-Fi to clear its password.</p>
+<h1>RF node</h1><p>No web login is required. Anyone who can access this node can change its configuration. Leave the Wi-Fi password empty to keep its saved value; select open Wi-Fi to clear it.</p>
 <p>Use the same session and epoch on all four nodes. A phone MAC may be randomized. Capture all produces high traffic. HTTP is for a trusted LAN.</p>
 <form id="config"></form><label><input type="checkbox" id="openWifi">Open Wi-Fi (clear password)</label><button onclick="save()">Save and restart</button><button onclick="status()">Status</button><button onclick="exportConfig()">Export without secrets</button><button onclick="action('restart')">Restart</button><button onclick="action('factory-reset')">Factory reset</button><pre id="status"></pre>
 <script>
 const form=document.getElementById('config'),out=document.getElementById('status');
 async function call(path, data){const r=await fetch('/api/'+path,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});if(!r.ok)throw Error('Request failed: '+r.status);return r.json()}
-async function init(){const c=await call('config');for(const [k,v] of Object.entries(c)){if(k==='config_schema')continue;const l=document.createElement('label');l.textContent=k;const i=document.createElement('input');i.name=k;i.value=v;i.type=typeof v==='number'?'number':'text';l.append(i);form.append(l)}for(const k of ['wifi_password','web_admin_password']){const l=document.createElement('label');l.textContent=k;const i=document.createElement('input');i.type='password';i.autocomplete='new-password';i.name=k;l.append(i);form.append(l)}await status()}
+async function init(){const c=await call('config');for(const [k,v] of Object.entries(c)){if(k==='config_schema')continue;const l=document.createElement('label');l.textContent=k;const i=document.createElement('input');i.name=k;i.value=v;i.type=typeof v==='number'?'number':'text';l.append(i);form.append(l)}const l=document.createElement('label');l.textContent='wifi_password';const i=document.createElement('input');i.type='password';i.autocomplete='new-password';i.name='wifi_password';l.append(i);form.append(l);await status()}
 async function status(){try{out.textContent=JSON.stringify(await call('status'),null,2)}catch(e){out.textContent=e.message}}
 async function save(){const c={};for(const i of form.elements){if(i.type==='password'&&!i.value)continue;c[i.name]=i.type==='number'?Number(i.value):i.value}if(document.getElementById('openWifi').checked)c.wifi_password='';try{out.textContent=JSON.stringify(await call('config',c))}catch(e){out.textContent=e.message}}
 async function action(a){if(!confirm(a+'?'))return;try{out.textContent=JSON.stringify(await call(a,{confirm:a}))}catch(e){out.textContent=e.message}}
 async function exportConfig(){const c=await call('config'),a=document.createElement('a');const url=URL.createObjectURL(new Blob([JSON.stringify(c,null,2)],{type:'application/json'}));a.href=url;a.download='node-config.json';a.click();URL.revokeObjectURL(url)}
 init().catch(e=>out.textContent=e.message);
 </script></html>)HTML";
-}
 
 void loadConfig() {
   Preferences p;
@@ -120,10 +119,11 @@ void factoryResetConfig() {
 }
 
 void startWebConfig() {
-  const char *headers[] = {"Origin", "Content-Type"}; server.collectHeaders(headers, 2);
-  server.on("/", HTTP_GET, [] { if (authorized()) server.send_P(200, "text/html", PAGE); });
-  server.on("/api/config", HTTP_GET, [] { if (!authorized()) return; JsonDocument d; toJson(d, nodeConfig, false); sendJson(d); });
-  server.on("/api/status", HTTP_GET, [] { if (!authorized()) return; JsonDocument d; fillStatus(d); sendJson(d); });
+  const char *headers[] = {"Origin", "Content-Type"};
+  server.collectHeaders(headers, 2);
+  server.on("/", HTTP_GET, [] { if (requestAllowed()) server.send_P(200, "text/html", PAGE); });
+  server.on("/api/config", HTTP_GET, [] { if (!requestAllowed()) return; JsonDocument d; toJson(d, nodeConfig, false); sendJson(d); });
+  server.on("/api/status", HTTP_GET, [] { if (!requestAllowed()) return; JsonDocument d; fillStatus(d); sendJson(d); });
   server.on("/api/config", HTTP_POST, [] {
     JsonDocument d; if (!body(d)) return;
     NodeConfig candidate = nodeConfig;

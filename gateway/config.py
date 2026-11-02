@@ -92,7 +92,7 @@ class Settings:
     # the gateway localizes only this one when a target is configured.
     target_device_mac: str = os.getenv("TARGET_DEVICE_MAC", "")
     target_device_token: str = os.getenv("TARGET_DEVICE_TOKEN", "")
-    device_token_salt: str = os.getenv("DEVICE_TOKEN_SALT", "rf-mvp-shared-salt-change-me")
+    device_token_salt: str = os.getenv("DEVICE_TOKEN_SALT", "secret-key")
 
     # When false, gateway localizes every observed device.
     localize_target_only: bool = os.getenv("LOCALIZE_TARGET_ONLY", "true").lower() in {
