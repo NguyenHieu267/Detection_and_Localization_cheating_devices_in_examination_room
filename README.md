@@ -5,6 +5,9 @@ thống kê RSSI, ghép vector 4 node cùng session/epoch/target rồi chạy WC
 thị Dashboard. README này gom cách chạy đã thực hiện trên Windows, các lỗi đã
 gặp và quy trình thu dữ liệu thực tế.
 
+Để hiểu source, đọc mục 13 (luồng chạy), 14 (từng file), 15–18 (từng hàm C++,
+Python và JavaScript), 19 (vai trò __init__.py và các bảng SQLite).
+
 ## 1. Chạy lại nhanh khi đã cấu hình ESP32
 
 Mở VS Code → Terminal → New Terminal. Dùng **hai terminal riêng**, giữ cả hai chạy.
@@ -12,7 +15,7 @@ Mở VS Code → Terminal → New Terminal. Dùng **hai terminal riêng**, giữ
 **Terminal 1 — Mosquitto:**
 
 ~~~powershell
-cd "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid"
+cd "C:\Users\Admin\Downloads\do an"
 & "C:\Program Files\mosquitto\mosquitto.exe" -c ".\scripts\mosquitto.conf" -v
 ~~~
 
@@ -21,7 +24,7 @@ Nếu cổng bị chiếm hoặc broker chỉ nghe localhost, xử lý theo mụ
 **Terminal 2 — Gateway:**
 
 ~~~powershell
-cd "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid"
+cd "C:\Users\Admin\Downloads\do an"
 
 $env:MQTT_HOST = "127.0.0.1"
 $env:MQTT_PORT = "1883"
@@ -31,7 +34,7 @@ $env:DEVICE_TOKEN_SALT = "rf-mvp-shared-salt-change-me"
 $env:LOCALIZE_TARGET_ONLY = "true"
 $env:MIN_OVERLAP_MS = "600"
 $env:EPOCH_TIMEOUT_MS = "1800"
-$env:DATABASE_PATH = "$PWD\rf_gateway.db"
+$env:DATABASE_PATH = "database/rf_gateway.db"
 
 & .\.venv\Scripts\python.exe -m uvicorn main:app --app-dir gateway --host 0.0.0.0 --port 8000
 ~~~
@@ -104,7 +107,7 @@ Máy đã dùng có Python, PlatformIO và Mosquitto. Nếu chuyển máy, cài 
 tương ứng rồi điều chỉnh đường dẫn. Các lệnh tương đối dưới đây chạy tại:
 
 ~~~powershell
-cd "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid"
+cd "C:\Users\Admin\Downloads\do an"
 ~~~
 
 ### Tạo venv và cài thư viện lần đầu
@@ -133,8 +136,8 @@ Activate không đổi thư mục hiện tại. Thoát môi trường bằng dea
 3. Kiểm tra đường dẫn rồi xóa đúng môi trường:
 
 ~~~powershell
-Get-Item -Force "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid\.venv"
-Remove-Item -LiteralPath "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid\.venv" -Recurse -Force
+Get-Item -Force "C:\Users\Admin\Downloads\do an\.venv"
+Remove-Item -LiteralPath "C:\Users\Admin\Downloads\do an\.venv" -Recurse -Force
 ~~~
 
 4. Tạo lại venv và cài requirements như phía trên.
@@ -221,7 +224,7 @@ venv cho Mosquitto.
 Cắm một board bằng cáp USB có truyền dữ liệu. Ví dụ board dùng COM5:
 
 ~~~powershell
-cd "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid"
+cd "C:\Users\Admin\Downloads\do an"
 
 & "C:\Users\Admin\.platformio\penv\Scripts\platformio.exe" device list
 & "C:\Users\Admin\.platformio\penv\Scripts\platformio.exe" run -d firmware
@@ -334,15 +337,37 @@ LOCALIZATION epoch=... nodes=4 vector={'ESP01': ..., 'ESP02': ..., 'ESP03': ...,
 
 ### Chọn đúng database và cấu hình môi trường
 
-Lệnh mục 1 dùng rf_gateway.db tại gốc project. Có thể đồng thời có
-gateway/rf_gateway.db từ cách chạy cũ. **Không coi chúng là bản sao hoặc tự xóa.**
-Muốn dùng lịch sử trong gateway thì đặt trước khi chạy:
+Database mặc định giờ luôn là **database/rf_gateway.db** tính từ vị trí source
+project, không phụ thuộc thư mục terminal. Thư mục được tự tạo khi mở database.
 
 ~~~powershell
-$env:DATABASE_PATH = "$PWD\gateway\rf_gateway.db"
+$env:DATABASE_PATH = "database/rf_gateway.db"
 ~~~
 
-Không tự hợp nhất hai database. Ghi rõ file nào dùng cho buổi đo.
+Có thể bỏ hẳn biến DATABASE_PATH để dùng mặc định. Muốn tách một buổi đo:
+
+~~~powershell
+$env:DATABASE_PATH = "buoi-do-002.db"
+~~~
+
+File đó nằm ở database/buoi-do-002.db. Đường dẫn tương đối có tiền tố database/
+cũng được hỗ trợ, không bị lặp database/database. Đường dẫn tuyệt đối tùy chỉnh
+vẫn là override có chủ ý nếu thực sự cần lưu ngoài thư mục này.
+
+Các cấu hình mặc định cũ rf_gateway.db, gateway/rf_gateway.db và đường dẫn tuyệt
+đối tương ứng của project được chuẩn hóa sang database/rf_gateway.db. Đây là
+chuẩn hóa nơi ghi **từ lần khởi động mới**, không phải tự chuyển/gộp lịch sử.
+
+Hai file trước đây có thể chứa dữ liệu khác nhau vì code cũ dùng đường dẫn
+tương đối theo thư mục chạy lệnh. Khi kiểm tra workspace hiện tại trước thay
+đổi này, không còn thấy file .db cũ ở gốc/gateway để chuyển. Nếu còn bản cũ ở chỗ
+khác: dừng Gateway, giữ nguyên bản gốc, dùng SQLite backup để đưa thành các tên
+riêng trong database/ rồi chọn file cần dùng. Không copy đè file đang có dữ liệu
+hoặc tự gộp bảng khi chưa kiểm tra khóa/trùng dữ liệu.
+
+Khi Gateway khởi động, log dòng SQLite database: cho biết file thực tế;
+GET /health cũng có database_path. Gateway đang chạy phải restart để nhận code
+và biến môi trường mới. Firmware ESP32 không cần flash lại vì thay đổi này.
 
 Có thể sao chép gateway/.env.example thành gateway/.env rồi chỉnh cấu hình;
 python-dotenv tìm .env theo cơ chế của thư viện, biến môi trường đã có được ưu
@@ -387,7 +412,7 @@ phát/reference capture có số frame biết trước mới đánh giá đượ
 Giữ Gateway chạy khi xuất, mở terminal khác:
 
 ~~~powershell
-cd "C:\Users\Admin\Downloads\do an\rf_localization_mvp_node_grid"
+cd "C:\Users\Admin\Downloads\do an"
 
 Invoke-WebRequest "http://127.0.0.1:8000/api/v1/raw/export?session_id=session-dev-001" -OutFile "raw_session-dev-001.jsonl"
 
@@ -432,8 +457,11 @@ cho phép client liên lạc. Laptop vào Internet không đủ để kết lu�
 ## 12. Source và quy tắc xử lý
 
 ~~~text
-rf_localization_mvp_node_grid/
+do an/
   README.md
+  database/
+    .gitkeep
+    rf_gateway.db
   firmware/
     platformio.ini
     src/config.h
@@ -488,3 +516,547 @@ API node: GET /, /api/status, /api/config; POST /api/config, /api/restart,
 API Gateway: GET /health, /api/v1/nodes, /api/v1/room,
 /api/v1/localization/latest, /api/v1/epochs/quality, /api/v1/raw/export;
 POST /api/v1/room; WebSocket /ws/v1/sessions/{session_id}.
+
+## 13. Giải thích luồng chạy từ tín hiệu tới chấm trắng trên Dashboard
+
+### 13.1. Các khái niệm cần phân biệt
+
+| Khái niệm | Hiểu đơn giản | Ví dụ |
+|---|---|---|
+| Node | Một ESP32 đứng ở một góc phòng | ESP01 |
+| Target | Thiết bị phát tín hiệu muốn theo dõi | BSSID hotspot điện thoại |
+| RSSI | Độ mạnh tín hiệu nhận được, đơn vị dBm | -50 mạnh hơn -70 |
+| Sample | Một lần thu RSSI của một frame | -51 dBm lúc 12:00:00.120 |
+| Session | Nhãn của một phiên đo | session-dev-001 |
+| Epoch | Một ô thời gian chung để gom số đo | Mỗi ô 1000 ms |
+| Batch | Các mẫu thô của một node trong một epoch | 7 mẫu của ESP01 |
+| Chunk | Một phần batch, chia nhỏ để vừa MQTT | chunk 0 và chunk 1 |
+| Device token | SHA256 của MAC bytes + salt, thay raw MAC trong MQTT | Chuỗi hex 64 ký tự |
+| Vector RSSI | Mỗi node góp một median của cùng target/epoch | [-51,-60,-63,-70] |
+
+Node ID là tên ESP; token là mã của target; session là tên buổi đo.
+Ba loại tên này không thay thế nhau. Một epoch có thể có nhiều target và mỗi
+target cần vector riêng. RSSI nhận ở các node có thể khác số mẫu, không cần
+packet_count bằng nhau.
+
+### 13.2. Ai làm việc gì?
+
+~~~mermaid
+flowchart TD
+    A["Điện thoại phát frame Wi-Fi"] --> B["Callback ESP32: RSSI + timestamp capture"]
+    B --> C["FreeRTOS Queue: giữ mẫu tạm trong RAM"]
+    C --> D["Publisher task: batch, chunk, JSON raw"]
+    D --> E["Mosquitto: chuyển tin MQTT"]
+    E --> F["MqttGateway: parse + validate topic/payload"]
+    F --> G["EpochReconstructor.add"]
+    G --> H["SQLite raw_chunks: lưu trước thống kê"]
+    G --> I["Đủ chunk/node hoặc timeout: đóng epoch"]
+    I --> J["Tính count, median, mean, MAD, min, max"]
+    J --> K{"Đủ 4 node, synced, overlap đạt?"}
+    K -->|"Không"| L["Lưu quality; không phát vị trí mới"]
+    K -->|"Có"| M["GatewayRuntime: chọn target rồi WCL"]
+    M --> N["SQLite: evidence + localization"]
+    M --> O["WebSocket: kết quả theo session"]
+    O --> P["JavaScript: vẽ vị trí lên SVG"]
+~~~
+
+Mosquitto chỉ làm trung gian nhận/chuyển bản tin theo topic. Nó không tính
+median và không định vị. SQLite là kho dữ liệu, không phải thuật toán định vị.
+Dashboard hiển thị kết quả Gateway đã tính, không tự chạy WCL.
+
+### 13.3. Từ khi ESP32 được cấp nguồn
+
+1. Arduino gọi setup() một lần: mở Serial, loadConfig() từ NVS, tạo queue,
+   chuẩn bị MQTT client và MAC target.
+2. Chưa có SSID thì enterAP() để người dùng nhập cấu hình. Đã có SSID thì bắt
+   đầu kết nối STA. startWebConfig() đăng ký các API; publisherTask chạy riêng.
+3. Arduino gọi loop() lặp mãi: phục vụ web, kiểm tra nút BOOT, xử lý Wi-Fi.
+4. STA kết nối: bắt đầu SNTP, đọc BSSID AP, bật promiscuous management/data.
+   Sniffer chỉ nghe kênh của STA hiện tại.
+5. SNTP báo thành công thì timeSynced() cập nhật phép đổi monotonic → UTC.
+   Không tự báo synced chỉ vì Wi-Fi đã kết nối.
+6. captureControl() mở cửa sổ đầu mỗi epoch. Callback chỉ nhận mẫu vào cửa sổ
+   đang mở; sau thời hạn thì không nhận mẫu vào epoch cũ.
+7. Wi-Fi driver gọi promiscuousCallback() khi nhận frame: kiểm tra header/MAC,
+   lấy RSSI và timestamp, xQueueSend(...,0) để đẩy mẫu mà không đợi queue trống.
+8. publisherTask() lấy mẫu ra, giữ batch và chờ marker kết thúc. publishBatch()
+   chia chunk/serialize/publish; callback vẫn có thể thu vào queue trong lúc đó.
+
+~~~text
+Ví dụ mỗi epoch 1000 ms, sniff_window_ms=700:
+
+epoch N:      |--- nhận mẫu khoảng 700 ms ---|--- khoảng còn lại ---|
+epoch N+1:                                                        |--- ... ---
+
+Driver callback: nhận RSSI khi frame đến, kiểm tra cửa sổ capture
+Arduino loop:   mở/đóng cửa sổ + web + Wi-Fi
+Publisher:      lấy queue + gửi batch đã đóng
+~~~
+
+Promiscuous không bị tắt riêng để publish; 300 ms còn lại không được nhận mẫu
+vào batch theo cấu hình cửa sổ hiện tại. Capture bắt đầu thực tế có thể trễ hơn
+ranh giới lý tưởng, vì thế startMs ghi thời điểm mở thật. Mất Wi-Fi làm window
+bị abort, không dùng window đó để khẳng định thu đầy đủ.
+
+Wi-Fi callback thuộc ngữ cảnh driver, không phải task ứng dụng tự pin core.
+Publisher được pin Core 1 trên dual-core; Arduino loop giữ cấu hình core của
+framework, không có Capture Task riêng pin Core 0 trong code hiện tại.
+Queue tách công việc giữa các luồng; không tạo thêm radio Wi-Fi thứ hai.
+
+### 13.4. Timestamp và epoch
+
+esp_timer_get_time() trả microseconds từ lúc chip chạy, riêng từng node.
+SNTP cung cấp UTC; timeSynced() tính:
+
+~~~text
+unixOffsetUs = Unix time tại sync - monotonic time tại sync
+capture_unix_ms = (capture_mono_us + unixOffsetUs) / 1000
+epoch_id = floor(capture_unix_ms / epoch_ms)
+~~~
+
+Gắn thời gian khi callback nhận frame, không khi publisher lấy queue. Ví dụ
+frame thu cuối epoch N nhưng chờ queue sang N+1 vẫn thuộc N.
+
+Chưa synced: Unix=0, epoch chẩn đoán dựa monotonic; Gateway không dùng nó làm
+vector đồng bộ chuẩn. Cờ synced và kiểm tra overlap không chứng minh sai số
+đồng hồ giữa các chip bằng 0; hệ thống chưa đo sai số SNTP thực tế.
+
+### 13.5. Gateway bắt đầu chạy thế nào?
+
+Lệnh uvicorn main:app --app-dir gateway nạp gateway/main.py như module main:
+
+1. Import config.py: đọc môi trường/.env và tạo DEFAULT_SETTINGS.
+2. Dòng runtime = GatewayRuntime() chạy ngay lúc import: mở SQLite tại đường
+   dẫn đã resolve, tạo/migrate bảng, đọc kích thước phòng đã lưu.
+3. Runtime tạo localizer, WebSocketManager, EpochReconstructor và MqttGateway,
+   nối chúng bằng các callback.
+4. Uvicorn bắt đầu lifespan(): lấy asyncio event loop, khởi động Paho MQTT và
+   tạo expiry_loop().
+5. Paho có network thread riêng: nhận MQTT rồi gọi _on_message(). Asyncio loop
+   phục vụ HTTP/WebSocket và kiểm tra timeout khoảng 100 ms/lần.
+6. MQTT callback muốn gửi lên browser dùng run_coroutine_threadsafe() để giao
+   việc broadcast về đúng asyncio event loop.
+
+Lock trong reconstructor ngăn MQTT thread và expiry loop cùng sửa/đóng một
+bucket. Lock trong Database bảo vệ một SQLite connection dùng giữa các thread.
+Các lock không có nghĩa là phần mềm xử lý mọi việc đồng thời trên SQLite.
+
+### 13.6. Ghép epoch, lưu raw và quyết định có chạy WCL không
+
+_on_message() kiểm tra JSON/Pydantic/topic trước, rồi báo node seen và add(report).
+Reconstructor dùng bucket (session_id, epoch_id), trong đó giữ chunks theo node.
+Một chunk trùng không được cộng lại mẫu. Chunk cùng khóa nhưng khác nội dung là
+conflict, bị từ chối. Chunk tới epoch đã đóng bị coi là late.
+
+add() gọi on_raw → store_raw_chunk() trước khi đưa chunk vào phần tính thống kê.
+Đủ tất cả chunk của 4 node thì đóng ngay; không đủ thì chờ timeout, không chờ mãi.
+
+_emit() chỉ tính thống kê cho node đã đủ chunks, gom mẫu riêng theo device_token.
+Ví dụ raw [-51,-49,-90]:
+
+~~~text
+packet_count = 3
+median = -51
+mean = (-51 -49 -90) / 3 = -63.333...
+abs deviation so với median = [0,2,39] → MAD = 2
+min = -90, max = -49
+~~~
+
+Gateway dùng **median** cho WCL. Mean/MAD/min/max để phân tích dữ liệu; hiện không
+có bước dùng MAD để xóa mẫu hoặc tự thay median. RSSI thô vẫn được giữ.
+
+Sau đó kiểm tra đủ node, clock_synced, cùng epoch_ms, và giao cửa sổ:
+
+~~~text
+overlap = max(0, min(các end) - max(các start))
+~~~
+
+Ngưỡng mặc định 600 ms cho window 700 ms. Cùng epoch ID nhưng cửa sổ quá lệch
+vẫn không hợp lệ. Overlap là điều kiện chấp nhận; thống kê hiện lấy mẫu của cửa
+sổ từng node, chưa cắt lại raw chỉ ở đoạn giao.
+
+on_epoch_quality() lưu kết quả chất lượng cho cả epoch không định vị được.
+Chỉ target có đủ 4 node và đạt điều kiện mới vào on_unified_epoch(). Hàm này
+lưu evidence, lọc target theo cấu hình, chạy WCL, lưu vị trí rồi broadcast.
+
+### 13.7. WCL biến RSSI thành tọa độ thế nào?
+
+Bốn góc chuẩn hóa:
+
+~~~text
+ESP01=(0,0), ESP02=(1,0), ESP03=(0,1), ESP04=(1,1)
+~~~
+
+1. Lấy max RSSI là số ít âm nhất.
+2. weight_i=10^((RSSI_i-max_RSSI)/10).
+3. u=sum(weight_i*u_i)/sum(weight_i), v tương tự.
+4. x=u*room_width, y=v*room_length.
+5. zone_id() tìm ô lưới chứa tọa độ đó.
+
+Ví dụ vector [-50,-60,-60,-70] có weights [1,0.1,0.1,0.01].
+u=v=0.11/1.21≈0.0909. Phòng 8×12 m cho x≈0.727 m, y≈1.091 m:
+kết quả lệch về ESP01 vì node đó nghe mạnh nhất. Nếu 4 RSSI bằng nhau, kết quả
+là giữa phòng. Đây là ví dụ tính toán, không phải phép đo khoảng cách thật.
+
+localize() tự nó chấp nhận vector chưa đủ node nếu gọi trực tiếp; chính
+EpochReconstructor đảm bảo strict_4 trong đường chạy hệ thống. Không hiểu nhầm
+rằng mọi lời gọi localize() đều tự kiểm tra 4 node.
+
+### 13.8. Browser nhận gì?
+
+Khi trang mở: init() đọc room, đọc trạng thái node, mở WebSocket theo session;
+sau đó refreshNodes() dùng HTTP mỗi 1 giây. Vì vậy có hai dòng cập nhật:
+
+- HTTP: thông tin phòng và online/offline của node.
+- WebSocket: EPOCH_QUALITY và kết quả vị trí của session đang xem.
+
+EPOCH_QUALITY chỉ đổi dòng trạng thái. Kết quả localization gọi renderResult()
+để cập nhật tọa độ/RSSI và drawRoom() để vẽ SVG. Khi epoch lỗi, chấm có thể vẫn
+ở **vị trí hợp lệ cuối cùng**; không được hiểu đó là vị trí mới của epoch lỗi.
+Confidence là chỉ số heuristic, không phải xác suất đúng đã hiệu chuẩn.
+
+## 14. Chức năng từng file
+
+| File/thư mục | Chức năng | Chạy ở đâu? |
+|---|---|---|
+| firmware/platformio.ini | Chọn board/framework/toolchain và ArduinoJson/PubSubClient | Máy build/flash |
+| firmware/src/config.h | Hằng số bộ nhớ/NTP/salt/GPIO, struct NodeConfig và mặc định | ESP32 |
+| firmware/src/web_config.h | Khai báo hàm/biến dùng chung giữa hai file .cpp | ESP32, lúc compile |
+| firmware/src/web_config.cpp | NVS, HTTP auth/validation, API và trang cấu hình nhúng | ESP32 + JS trên browser |
+| firmware/src/main.cpp | Wi-Fi/SNTP, sniffer, queue, window, publisher, setup/loop | ESP32 |
+| firmware/.gitignore | Bỏ qua file build theo cấu hình firmware | Git |
+| firmware/.vscode/extensions.json | Gợi ý extension cho editor, không thuộc runtime | VS Code |
+| gateway/config.py | Đọc settings, đường dẫn database, tính cấu hình grid | Laptop Python |
+| gateway/models.py | Định dạng dữ liệu và quy tắc kiểm tra bằng Pydantic | Laptop Python |
+| gateway/mqtt_ingest.py | Paho client, subscribe và tiếp nhận/validate MQTT | Laptop Python |
+| gateway/epoch_reconstructor.py | Ghép chunks/epoch, thống kê, đồng bộ và timeout/dedup | Laptop Python |
+| gateway/localization.py | Công thức WCL, tọa độ/zone/confidence và dữ liệu lưới | Laptop Python |
+| gateway/database.py | Toàn bộ SQL mở/tạo/migrate/ghi/đọc/export | Laptop Python |
+| gateway/main.py | Nối các thành phần, FastAPI, callbacks, HTTP/WebSocket | Laptop Python |
+| gateway/static/index.html | HTML/CSS/JavaScript Dashboard, vẽ bản đồ SVG | Browser |
+| gateway/requirements.txt | Dependencies chạy Gateway | pip |
+| gateway/.env.example | Mẫu biến cấu hình, không tự là .env đang hoạt động | Người cấu hình |
+| gateway/__init__.py | Đánh dấu regular package gateway, hiện chỉ docstring | Cơ chế import Python |
+| scripts/mosquitto.conf | Listener broker nhận MQTT trên IPv4 | Mosquitto |
+| scripts/start_mqtt.bat | Mở broker bằng đúng file cấu hình | Windows |
+| scripts/start_gateway.bat | cd vào gateway rồi python main.py, dùng Python của terminal | Windows |
+| database/rf_gateway.db | SQLite runtime: dữ liệu và cấu hình phòng đã lưu | SQLite |
+| database/.gitkeep | Giữ thư mục database trống trong Git, không có code | Git |
+| .gitignore | Ignore venv, .env, DB, raw export, build/cache | Git |
+| .venv | Interpreter/thư viện Python cài cục bộ, có thể tạo lại | Laptop |
+| .pio, __pycache__ nếu có | File build/bytecode tự sinh, không phải dữ liệu đo | Công cụ |
+| README.md | Hướng dẫn chạy và giải thích source trong cùng tài liệu | Người đọc |
+
+## 15. Từng hàm firmware/src/main.cpp
+
+| Hàm | Ai gọi? | Làm gì và vì sao? |
+|---|---|---|
+| macEquals(a,b) | Callback lọc frame | So 6 byte MAC; dùng để nhận target, bỏ node MAC và nhận AP. |
+| makeDeviceToken(mac) | appendSample() | SHA256(MAC bytes + salt), trả hex 64 ký tự. Làm ở publisher, không crypto trong callback. |
+| timeSynced(tv) | SNTP | Lấy mốc monotonic, tính unixOffsetUs, bật clockSynced khi UTC hợp lệ; bảo vệ dữ liệu chia sẻ bằng captureMux. |
+| promiscuousCallback(buf,type) | Wi-Fi driver | Chụp monotonic ngay đầu; kiểm tra loại/độ dài header, MAC/channel/RSSI; gate window; tạo RawRssiSample; đẩy queue không block, đầy thì tăng queueDrops. |
+| header(d,w,index,count) | publishBatch() | Điền metadata chung vào JSON: session/node/epoch/window/sync/chunk/counters và tạo observations rỗng. |
+| appendSample(d,s) | publishBatch() | Thêm đúng một mẫu raw vào JSON, tạo token, giữ nguyên RSSI và timestamps, ghi frame type/subtype/channel. |
+| mqttEnsureConnected() | publisherTask() | Nếu STA có mạng và tới thời gian retry thì connect broker; thành công gửi NODE_READY v1. Chỉ publisher dùng MQTT client. |
+| publishBatch(w,count) | publisherTask() | Đo measureJson để tính ranh giới chunks theo cả byte và số mẫu; serialize lại với chunk_count thật; publish tối đa 2 lần/chunk; cập nhật drops/fails/latency/log. Batch rỗng vẫn gửi heartbeat. |
+| publisherTask(void*) | FreeRTOS | Loop riêng nhận queue, giữ batch duy nhất. Gặp mẫu epoch mới khi batch cũ chưa có marker thì loại batch cũ; marker aborted thì bỏ, marker thường thì publishBatch. |
+| enterAP() | setup()/loop() | Đóng capture, tắt radio sniff khi cần, chuyển sang AP provisioning, phát RF-Setup-chipID và log địa chỉ web. |
+| captureControl() | loop() khi STA đã bật sniff | Tính epoch hiện tại, đóng window hết hạn và đẩy marker; mở window mới trong đoạn sniff. Chỉ điều khiển cửa sổ, không tính thống kê. |
+| fillStatus(d) | GET /api/status | Tạo JSON không secrets: mode/IP/channel/sync/MQTT, queue/counters/heap/latency/epoch. |
+| setup() | Arduino, một lần sau reset | Load NVS, tạo queue/buffer, parse target, chuẩn bị Wi-Fi/MQTT, mở web và tạo publisher task trên core phù hợp. |
+| loop() | Arduino, lặp liên tục | serviceWebConfig, kiểm tra BOOT giữ 3 giây, Wi-Fi reconnect/fallback, khởi động SNTP, bật promiscuous, gọi captureControl; mất STA thì gửi marker abort và dừng sniff. |
+
+RawRssiSample chứa mẫu hoặc marker: marker=true là **tín hiệu kết thúc window**,
+không phải một frame Wi-Fi. aborted=true là window bị ngắt, không đủ điều kiện
+dùng như một window hoàn chỉnh. samples[] và chunkEnds[] chỉ publisher sở hữu.
+
+queueDrops đếm mẫu không vào queue; batchDrops đếm mẫu bị loại ở publisher;
+publishFails đếm lần gửi lỗi; markerDrops đếm marker không vào queue.
+publishLatencyMs đo thời gian thực thi publishBatch, không phải độ trễ toàn tuyến
+từ lúc nhận frame đến khi browser hiển thị.
+
+## 16. Từng hàm web config trên ESP32
+
+### 16.1. C++ trong web_config.cpp
+
+| Hàm | Chức năng |
+|---|---|
+| toJson(d,c,secrets) | Chuyển NodeConfig sang JSON. secrets=true khi lưu NVS; false khi GET/export để không lộ password. |
+| validMac(s) | Kiểm tra đúng 17 ký tự dạng XX:XX:XX:XX:XX:XX, hex hợp lệ, unicast và khác MAC toàn 0. |
+| valid(c) | Kiểm tra toàn bộ cấu hình: node ID, SSID/password, broker/port, session, target/mode, epoch/window, batch limits, admin password. Không kiểm chứng được node_id có trùng board khác trên mạng hay không. |
+| apply(d,c) | Đọc các trường JSON có gửi, giữ giá trị cũ cho trường bỏ qua; kiểm tra kiểu, chuẩn hóa MAC in hoa rồi valid(c). Áp dụng vào bản candidate, không sửa cấu hình callback đang dùng. |
+| authorized() | Từ chối khi đã hẹn reboot; cho bootstrap trên AP chưa có admin; còn lại kiểm tra HTTP Basic admin và trả challenge nếu sai. |
+| sendJson(d) | Serialize JSON trả HTTP 200, Content-Type JSON, Cache-Control no-store. |
+| body(d) | Kiểm tra auth, Origin/Content-Type, body <=2048 ký tự và JSON object hợp lệ. Các route POST gọi trước khi xử lý. |
+| loadConfig() | Đọc blob config trong namespace NVS rf-node, kiểm tra schema=1 và valid; hợp lệ mới thay nodeConfig mặc định. |
+| factoryResetConfig() | Xóa namespace NVS rf-node; caller chịu trách nhiệm trả response/reboot. |
+| startWebConfig() | Đăng ký các route, thu thập headers cần kiểm tra, bắt đầu WebServer cổng 80. |
+| serviceWebConfig() | handleClient() xử lý HTTP; nếu đến rebootAt thì restart. Được gọi từ loop(). |
+
+NodeConfig và các hằng số ở config.h không phải hàm. web_config.h chỉ khai báo
+để compiler biết hàm/biến nằm ở file khác; extern không tạo thêm cấu hình thứ hai.
+
+### 16.2. Các callback route nằm trong startWebConfig()
+
+| Route | Hành động |
+|---|---|
+| GET / | Auth rồi trả HTML PAGE nằm trong flash ESP32. |
+| GET /api/config | Auth rồi toJson(...,false), không trả mật khẩu. |
+| GET /api/status | Auth rồi gọi fillStatus và sendJson. |
+| POST /api/config | body → tạo candidate → apply/valid → serialize có secrets → ghi một blob NVS → trả success → hẹn reboot sau khoảng 1 giây. |
+| POST /api/restart | body → trả success → hẹn reboot. |
+| POST /api/factory-reset | body → bắt buộc confirm=factory-reset → xóa NVS → trả success → hẹn reboot. |
+
+Đây là lambda không có tên hàm riêng. save không sửa nodeConfig runtime ngay:
+reboot sẽ gọi loadConfig đọc bản mới, tránh trộn session/target cũ với mới.
+
+### 16.3. JavaScript trong PAGE, chạy trên browser
+
+| Hàm | Chức năng |
+|---|---|
+| call(path,data) | GET /api/path nếu không có data; có data thì POST JSON; kiểm tra HTTP thành công rồi đọc JSON. |
+| init() | Lấy config không secrets, sinh input từ các trường, thêm ô password rỗng và đọc Status ban đầu. |
+| status() | GET status và in JSON/lỗi lên vùng kết quả. |
+| save() | Lấy form, đổi trường number, bỏ qua ô password trống để giữ cũ; checkbox Open Wi-Fi thì gửi password rỗng; POST config. |
+| action(a) | Hỏi confirm cho restart/factory-reset, POST confirm=a. |
+| exportConfig() | GET config không secrets, tạo Blob và tải node-config.json, giải phóng object URL. |
+
+Hai file cùng tên init() ở web node và Dashboard là hai trang riêng, không gọi
+lẫn nhau. Browser tải trang từ ESP32 mới chạy các hàm của PAGE.
+
+## 17. Từng class/hàm Gateway
+
+### 17.1. config.py — cấu hình và đường dẫn
+
+| Thành phần | Chức năng |
+|---|---|
+| PROJECT_ROOT | Thư mục cha của gateway, lấy từ __file__, không từ terminal cwd. |
+| DATABASE_DIR | PROJECT_ROOT/database, nơi mặc định giữ SQLite. |
+| resolve_database_path(path) | Chuẩn hóa tên/đường dẫn, map vị trí mặc định cũ về database/rf_gateway.db; tương đối đặt dưới database; giữ :memory: và absolute override tùy chỉnh. Không di chuyển/gộp dữ liệu. |
+| NodePosition | Dataclass chứa node_id,x_m,y_m, không có hàm tự viết. Được build_settings tạo nhưng WCL hiện dùng bốn góc chuẩn hóa riêng. |
+| GridConfig | Dataclass số cột/hàng và kích thước ô; không có hàm tự viết. |
+| Settings | Dataclass các tham số MQTT/DB/room/target/timeouts, mặc định từ env. frozen=True để không sửa trực tiếp từng trường. |
+| Settings.grid | Property gọi make_grid với kích thước hiện tại, trả GridConfig; không phải biến lưu grid một lần. |
+| make_grid(...) | Chặn kích thước tối thiểu và dùng ceil(room/cell) để tính cột/hàng; ô cuối có thể nhỏ hơn. |
+| build_settings(...) | Tạo Settings mới khi đổi phòng/grid, giữ MQTT/DB/target/timeouts của base và cập nhật các góc vật lý. |
+| DEFAULT_SETTINGS | Cấu hình nền được tạo khi import module. |
+| default_config_path() | Helper trả Path SQLite đã resolve; hiện đường runtime chính không gọi helper này, mà Database tự resolve đường dẫn. |
+
+Dataclass tự sinh constructor, không cần người dùng viết __init__ cho từng kiểu.
+Settings không tự reload .env khi sửa file trong lúc server đang chạy.
+
+### 17.2. models.py — hợp đồng dữ liệu
+
+| Class/hàm | Vai trò |
+|---|---|
+| StrictModel | BaseModel nền: strict=True, extra=forbid; không tự ép chuỗi thành số hoặc chấp nhận trường dư. |
+| NodeReady | Kiểm tra NODE_READY v1: session, node, message_id, timestamp. |
+| ObservationItem | Thống kê cho một target ở một node; dùng sau khi Gateway tính và cho tương thích v1. |
+| EpochObservation | Report v1 có sẵn thống kê, chỉ dùng chẩn đoán trong strict sync hiện tại. |
+| EpochObservation.validate_epoch_window() | Kiểm tra sniff_end_ms > sniff_start_ms; được reconstructor gọi. |
+| RoomConfigRequest | Body API sửa kích thước phòng/lưới, các kích thước phải >0.1 và <=1000 m. |
+| LocalizationResult | Kết quả gửi browser: track/session/epoch, x/y/zone/confidence, vector, count/drop/overlap. |
+| EpochDeviceEvidence | Model mô tả evidence; hiện chưa được runtime instantiate, Database nhận các trường trực tiếp. Giữ như định nghĩa dữ liệu tham chiếu. |
+| RawObservation | Kiểm tra từng mẫu v2: token, RSSI nguyên -127..0, channel 1..14, type/subtype và hai timestamp. |
+| RawEpochObservation | Report raw v2: metadata window/chunk/counters và danh sách mẫu. |
+| RawEpochObservation.validate_window() | Validator chạy sau field validation: index<count, window nằm trong epoch, sample nằm trong window; unsynced không được nhận là có Unix time. |
+
+Các field không phải hàm riêng. model_validate()/model_dump()/model_dump_json()
+là hàm của thư viện Pydantic được kế thừa, không được viết lại trong project.
+
+### 17.3. mqtt_ingest.py — cửa nhận MQTT
+
+| Hàm | Chức năng |
+|---|---|
+| MqttGateway.__init__(...) | Tạo Paho MQTT v3.1.1 client/callback API v2, gắn settings/reconstructor/callback node, cài auth broker nếu cấu hình. |
+| MqttGateway.start() | connect_async và loop_start: chạy network loop trong thread nền. |
+| MqttGateway.stop() | Dừng network loop, disconnect, đặt connected=false. |
+| MqttGateway._on_connect(...) | Callback Paho sau connect: thành công thì subscribe observation và ready, QoS 0. |
+| MqttGateway._on_disconnect(...) | Cập nhật trạng thái và log broker đã mất kết nối. |
+| MqttGateway._on_message(...) | Giới hạn bytes, decode JSON, chọn v1/v2 model, đối chiếu topic với node_id; report thì on_node_seen + add, ready thì on_node_seen + on_node_ready. Payload sai bị log loại lỗi, không echo dữ liệu nhạy cảm. |
+
+Dấu _ đầu tên hàm là quy ước nội bộ, không khiến hàm tự chạy. Paho gọi vì
+__init__ đã gán chúng vào client.on_connect/on_disconnect/on_message.
+
+### 17.4. epoch_reconstructor.py — ghép mảnh và thống kê
+
+| Thành phần/hàm | Chức năng |
+|---|---|
+| EpochBucket | Dataclass giữ session/epoch, mốc monotonic bắt đầu chờ, chunks từng node và report legacy. |
+| EpochReconstructor.__init__(...) | Lưu expected_nodes/timeouts/callbacks; tạo buckets, tombstone/floor, RLock, counters và last_quality. |
+| EpochReconstructor.add(report) | Validate node/window; chặn late/duplicate/conflict; tạo bucket có giới hạn; kiểm tra metadata, giới hạn mẫu; lưu raw rồi giữ chunk. Đủ node/chunk thì _emit. |
+| EpochReconstructor.flush_expired() | Duyệt bucket quá timeout và _emit, được expiry_loop gọi định kỳ. Timeout dựa monotonic của Gateway, chỉ để quyết định chờ bao lâu. |
+| EpochReconstructor._emit(key,bucket) | Lấy bucket ra, đóng epoch, giới hạn tombstone RAM; tính thống kê theo target/node đủ chunks; kiểm tra sync/overlap/đủ node; lưu/phát quality; chỉ đưa target complete sang on_complete. |
+
+Timeout dùng arrival để giới hạn thời gian chờ; việc xác định epoch đồng bộ
+dùng capture timestamps/node metadata, không dùng arrival time để ghép đại.
+
+### 17.5. localization.py — WCL
+
+| Thành phần/hàm | Chức năng |
+|---|---|
+| LocalizationEstimate | Dataclass kết quả x/y, u/v chuẩn hóa, zone/confidence/nodes/weights. |
+| WCLLocalizationEngine.__init__(settings) | Lưu settings và bốn góc chuẩn hóa ESP01–04. |
+| WCLLocalizationEngine.localize(rssi_by_node) | Bỏ node/RSSI không hợp lệ, tính weights, centroid chuẩn hóa, nhân kích thước phòng, tìm zone và confidence. Không có dữ liệu hợp lệ thì None. |
+| WCLLocalizationEngine.zone_id(x,y) | Đổi tọa độ ra hàng/cột lưới, chặn ở biên phòng, trả Z1/Z2/... theo hàng. |
+| WCLLocalizationEngine.grid_payload() | Sinh danh sách ô có tọa độ và kích thước thực để browser vẽ, xử lý hàng/cột cuối nhỏ hơn. |
+| WCLLocalizationEngine._confidence(valid,u,v) | Heuristic kết hợp tỷ lệ node và độ cân bằng weights; u/v hiện nhận vào nhưng chưa dùng trong công thức. Không phải sai số đo hoặc xác suất đúng. |
+
+### 17.6. database.py — các thao tác SQLite
+
+| Hàm | Chức năng |
+|---|---|
+| Database.__init__(path) | Resolve đường dẫn, tự tạo thư mục cha, mở SQLite cho nhiều thread với khóa riêng, row_factory trả row theo tên, rồi _init_schema. :memory: dùng SQLite RAM. |
+| Database._init_schema() | CREATE TABLE/INDEX IF NOT EXISTS; kiểm tra PRAGMA và thêm cột thiếu cho node/room từ DB cũ, không xóa dữ liệu cũ. |
+| Database.close() | Đóng connection dưới lock, gọi khi Gateway kết thúc hoặc kiểm tra tạm đã xong. |
+| Database.store_raw_chunk(report) | Đối chiếu bản raw cùng khóa nếu có; khác nội dung thì lỗi; INSERT OR IGNORE bản giống để không nhân đôi. |
+| Database.store_quality(quality) | Lưu kết quả đóng epoch một lần theo session/epoch, cũng là tombstone trên disk. |
+| Database.epoch_closed(session,epoch) | Tra epoch_quality để biết epoch đã đóng, dùng chống replay kể cả restart Gateway. |
+| Database.latest_quality(limit) | Lấy các epoch_quality mới nhất theo thứ tự lưu, parse JSON thành dict. |
+| Database.export_raw(session_id) | Generator xuất JSONL theo session, từng trang 100 rows; chốt upper ID lúc bắt đầu để không đuổi theo dữ liệu mới vô hạn. |
+| Database.upsert_node_ready(...) | Insert hoặc cập nhật node_status với session/thời gian ready và seen. |
+| Database.upsert_node_seen(...) | Cập nhật lần nhận message gần nhất; node chưa tồn tại thì tạo record. |
+| Database.get_node_status() | Đọc node_status lưu disk. Hiện API online/offline dùng bộ nhớ GatewayRuntime.node_status(), chưa gọi hàm DB này. |
+| Database.save_room_config(...) | Lưu một cấu hình phòng/lưới với id=1, lần sau cập nhật record đó. |
+| Database.load_room_config() | Đọc phòng/lưới; DB cũ chỉ có số hàng/cột thì suy kích thước cell để tương thích. |
+| Database.upsert_epoch_device_evidence(...) | Lưu vector median/count của epoch/target trước lọc target định vị; chỉ các vector đã qua reconstructor mới đến đây. |
+| Database.upsert_localization_update(**kwargs) | Lưu hoặc cập nhật kết quả WCL theo session/epoch/track, vector RSSI được serialize JSON. |
+| Database.latest_localization(limit) | Đọc lịch sử mới nhất; parse vector và ghép quality để trả sync/count/drop/overlap cho UI lịch sử. |
+
+upsert nghĩa là có khóa thì UPDATE, chưa có thì INSERT. self.lock giữ connection
+khỏi hai thread truy cập đồng thời; with self.conn quản lý commit/rollback.
+
+### 17.7. main.py — nối hệ thống và API
+
+| Hàm | Chức năng |
+|---|---|
+| token_for_mac(mac_text,salt) | Chuyển MAC dạng chữ thành 6 byte rồi SHA256(bytes+salt), cùng thuật toán firmware để Gateway chọn đúng target. |
+| WebSocketManager.__init__() | Tạo danh sách client→session, asyncio lock và chỗ lưu event loop. |
+| WebSocketManager.add(websocket,session) | Accept socket, kiểm tra max clients, lưu client theo session hoặc đóng với code 1013. |
+| WebSocketManager.remove(websocket) | Bỏ client khỏi danh sách khi đóng/lỗi. |
+| WebSocketManager.broadcast(data) | Chỉ gửi cho client cùng session_id, loại các socket lỗi. |
+| GatewayRuntime.__init__() | Mở/log DB, đọc room, tạo settings/localizer/manager/reconstructor/MQTT, gắn callbacks và tạo bộ nhớ last-seen cho 4 node. |
+| GatewayRuntime.target_token | Property: ưu tiên TARGET_DEVICE_TOKEN; nếu trống thì tính từ TARGET_DEVICE_MAC+salt; không cấu hình thì None. |
+| GatewayRuntime.set_room(...) | Tạo Settings mới, tạo lại localizer, lưu room xuống SQLite. Không flash hay đổi tọa độ trên ESP. |
+| GatewayRuntime.on_node_seen(...) | Ghi thời gian nhận hiện tại vào RAM và node_status DB, nhớ session/message type để UI online. |
+| GatewayRuntime.on_node_ready(ready) | Lưu record ready và log node bắt đầu xuất hiện. |
+| GatewayRuntime.node_status() | Tính online/offline theo last_seen RAM và timeout 3500 ms mặc định. Sau restart cần message mới để online lại. |
+| GatewayRuntime.should_localize(token,device_count) | LOCALIZE_TARGET_ONLY=false thì cho mọi token; nếu có target thì so token; không target thì chỉ tự chọn khi đúng một target hợp lệ. |
+| GatewayRuntime.on_unified_epoch(...) | Nhận các vector complete, lưu evidence, lọc target, chạy WCL, tạo LocalizationResult, lưu SQLite, schedule broadcast và log vector. |
+| GatewayRuntime.on_epoch_quality(quality) | Lưu quality và schedule broadcast EPOCH_QUALITY dù không có vị trí mới. |
+| expiry_loop() | Vòng asyncio gọi flush_expired rồi sleep 0.1 giây; giữ timeout hoạt động cả khi MQTT im lặng. |
+| lifespan(app) | Lifecycle FastAPI: nối event loop, start MQTT + expiry; khi dừng thì cancel expiry, stop MQTT và close DB. |
+| dashboard() | GET / trả file static/index.html. |
+| health() | GET /health trả broker/status/grid/counters/target_configured và database_path thực tế. |
+| get_nodes() | GET /api/v1/nodes trả trạng thái node từ runtime. |
+| epoch_quality(limit) | GET /api/v1/epochs/quality đọc quality mới nhất, giới hạn 1..200. |
+| export_raw(session_id) | GET /api/v1/raw/export tạo StreamingResponse JSONL từ Database.export_raw, có header download. |
+| get_room() | GET /api/v1/room trả kích thước, bốn góc vật lý, zones và số hàng/cột/kích thước ô cuối. |
+| update_room(request) | POST /api/v1/room: request đã Pydantic validate, gọi set_room rồi trả room mới. |
+| latest_localization(limit) | GET /api/v1/localization/latest đọc lịch sử, giới hạn 1..200. |
+| localization_websocket(websocket,session_id) | Đăng ký socket theo session, gửi lịch sử cùng session trong 50 kết quả mới nhất toàn DB rồi giữ kết nối; đóng/lỗi thì remove. |
+
+Khối if __name__ == "__main__" chạy khi python main.py: khởi động Uvicorn.
+Khi dùng uvicorn main:app thì module được import, khối này không tự chạy.
+
+## 18. Từng hàm Dashboard trong gateway/static/index.html
+
+| Hàm/callback | Chức năng |
+|---|---|
+| $(id) | Arrow helper gọi document.getElementById(id), lấy phần tử UI. |
+| apiJson(url,options) | Wrapper fetch, kiểm tra HTTP status, trả JSON hoặc ném lỗi. |
+| loadRoom() | GET room, điền các input và gọi updateConfigText/drawRoom. |
+| updateConfigText() | Hiển thị số cột/hàng, kích thước cell/phòng ở dòng mô tả. |
+| applyRoom() | Đọc input thành number, kiểm tra >0 phía browser, POST room; server còn validate chặt hơn; cập nhật UI theo response. |
+| nodeStatusColor(id) | Trả màu xám khi chưa biết, xanh online, đỏ offline. |
+| renderNodeCards() | Vẽ 4 thẻ node với online/session/last message và đếm số online. |
+| refreshNodes() | GET nodes, cập nhật nodeStates, vẽ cards và room; chạy mỗi giây. |
+| drawRoom() | Tính tỉ lệ mét→pixel, vẽ SVG room/zones/node labels và vị trí lastResult. |
+| renderResult(r) | Lưu lastResult, vẽ lại room, điền zone/x/y/nodes/confidence/epoch/RSSI/count/drops. |
+| connect() | Đóng socket cũ, clear retry timer, mở WebSocket URL theo session của input, gắn callbacks. |
+| ws.onopen | Hiển thị WebSocket connected. |
+| ws.onclose | Báo mất kết nối, hẹn connect lại sau 1500 ms. |
+| ws.onerror | Hiển thị lỗi WebSocket. |
+| ws.onmessage | Parse JSON; quality thì cập nhật status/overlap, localization thì renderResult. |
+| $('apply').onclick | Gắn nút Apply vào applyRoom. |
+| $('session').onchange | Đổi session thì gọi connect để chuyển kênh nhận kết quả. |
+| init() ở cuối script | Hàm async tự gọi: loadRoom → refreshNodes → connect → setInterval(refreshNodes,1000). |
+
+Các callback map/filter trong hàm vẽ chỉ duyệt danh sách để tạo HTML/SVG, không
+phải tác vụ định vị hoặc một pipeline riêng.
+
+## 19. __init__.py có dùng không và database lưu những gì?
+
+### 19.1. __init__.py
+
+gateway/__init__.py hiện chỉ có docstring, **không có hàm và không chạy MQTT/WCL**.
+Nó đánh dấu gateway là regular Python package. Khi import gateway, Python nạp
+__init__.py. Bản Python mới còn hỗ trợ namespace package không cần file này,
+nhưng giữ nó giúp ý định package rõ ràng.
+
+Trong cách chạy hiện tại uvicorn main:app --app-dir gateway hoặc python main.py
+tại gateway, module được nạp là main và các import nội bộ đang là from config
+import..., nên __init__.py **không phải điểm khởi động và không được gọi trực
+tiếp trong tuyến đó**. Giữ file này là hợp lý, không gây thêm task/tốn dữ liệu.
+
+Không tự đổi lệnh thành uvicorn gateway.main:app hoặc python -m gateway.main:
+việc có __init__.py không tự sửa các absolute import nội bộ thành package import.
+Muốn hỗ trợ đồng thời các cách chạy đó cần refactor imports riêng.
+
+### 19.2. Một file SQLite chứa nhiều bảng
+
+| Bảng | Chứa gì? | Khi nào ghi? |
+|---|---|---|
+| raw_chunks | JSON raw nhận từ node, session/epoch/node/chunk và received_at | Chunk mới hợp lệ, trước thống kê |
+| epoch_quality | Chất lượng, overlap, node_stats, diagnostics/drop và token statuses; tombstone epoch | Epoch đóng do đủ dữ liệu hoặc timeout |
+| epoch_device_evidence | Vector median và sample count của target/epoch | Vector complete đến runtime, trước lọc target WCL |
+| localization_updates | x/y/zone/confidence/nodes/vector theo track/session/epoch | WCL ra kết quả cho target được chọn |
+| node_status | Session, ready/last-seen của node | MQTT ready/observation |
+| room_config | Một cấu hình phòng và cell grid đang dùng | Người dùng Apply room/grid |
+
+Không cần tạo riêng một DB cho raw và một DB cho WCL. Hai file cũ phát sinh do
+thư mục chạy khác nhau, không phải thiết kế cần hai database.
+
+Đường dẫn mới:
+
+~~~text
+C:\Users\Admin\Downloads\do an\
+  database\
+    rf_gateway.db
+~~~
+
+Chạy từ gốc project hay từ gateway đều chọn file mặc định này. Tên tương đối
+buoi-do-002.db thành database/buoi-do-002.db. database/buoi-do-002.db cũng cho
+cùng đường dẫn. Absolute override tùy chỉnh vẫn được tôn trọng khi đặt rõ ràng;
+các đường dẫn mặc định cũ trong project được redirect sang vị trí mới.
+
+database/.gitkeep không giữ dữ liệu; nó chỉ giữ thư mục trong Git. Các file .db
+đã bị .gitignore bỏ qua, cần tự backup dữ liệu đo. Folder database tự tạo nếu
+thiếu. Không có tự chuyển/gộp dữ liệu cũ khi startup.
+
+### 19.3. Cách tự lần theo một mẫu khi đọc source
+
+Bắt đầu từ tên hàm theo thứ tự sau, sẽ thấy “đầu vào → xử lý → đầu ra”:
+
+~~~text
+promiscuousCallback
+ → xQueueSend
+ → publisherTask / xQueueReceive
+ → publishBatch / appendSample / header
+ → Mosquitto
+ → MqttGateway._on_message
+ → EpochReconstructor.add
+ → Database.store_raw_chunk
+ → EpochReconstructor._emit
+ → GatewayRuntime.on_epoch_quality
+ → GatewayRuntime.on_unified_epoch
+ → WCLLocalizationEngine.localize
+ → Database.upsert_localization_update
+ → WebSocketManager.broadcast
+ → ws.onmessage / renderResult / drawRoom
+~~~
+
+Khi mất dữ liệu, kiểm tra từng ranh giới này: callback có sample? queue có drop?
+MQTT đã tới laptop? raw_chunks đã có row? quality reject vì sao? WCL có vector?
+WebSocket có đúng session? Cách đó giúp phân biệt lỗi thu RF, lỗi mạng, lỗi điều
+kiện đồng bộ và lỗi hiển thị thay vì gom chung thành “không định vị được”.

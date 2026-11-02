@@ -70,6 +70,7 @@ class GatewayRuntime:
     def __init__(self) -> None:
         self.base_settings = DEFAULT_SETTINGS
         self.database = Database(self.base_settings.database_path)
+        logger.info("SQLite database: %s", self.database.path)
         saved = self.database.load_room_config()
         if saved:
             self.settings = build_settings(
@@ -290,6 +291,7 @@ async def health() -> dict[str, Any]:
     grid = runtime.settings.grid
     return {
         "status": "ok",
+        "database_path": runtime.database.path,
         "vector_mode": "strict_4",
         "min_overlap_ms": runtime.settings.min_overlap_ms,
         "epoch_counters": dict(runtime.reconstructor.counters),

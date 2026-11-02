@@ -4,13 +4,18 @@ import json
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any
+
+from config import resolve_database_path
 
 
 class Database:
     def __init__(self, path: str):
-        self.path = path
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.path = resolve_database_path(path)
+        if self.path != ":memory:":
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.Lock()
         self._init_schema()

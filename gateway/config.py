@@ -5,6 +5,39 @@ import os
 import math
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATABASE_DIR = PROJECT_ROOT / "database"
+
+
+def resolve_database_path(path: str | Path | None = None) -> str:
+    """Resolve SQLite files independently of the terminal's working directory.
+
+    Relative paths live under database/. Old default locations are aliases for
+    database/rf_gateway.db; existing files are never moved or merged implicitly.
+    Explicit absolute paths to other files and :memory: remain supported.
+    """
+    value = str(path if path is not None else os.getenv("DATABASE_PATH", "")).strip()
+    if value == ":memory:":
+        return value
+    requested = Path(value or "rf_gateway.db").expanduser()
+    legacy_defaults = {
+        (PROJECT_ROOT / "rf_gateway.db").resolve(),
+        (PROJECT_ROOT / "gateway" / "rf_gateway.db").resolve(),
+        (PROJECT_ROOT / "rf_localization_mvp_node_grid" / "rf_gateway.db").resolve(),
+        (PROJECT_ROOT / "rf_localization_mvp_node_grid" / "gateway" / "rf_gateway.db").resolve(),
+    }
+    candidate = (PROJECT_ROOT / requested).resolve()
+    if candidate in legacy_defaults:
+        return str(DATABASE_DIR / "rf_gateway.db")
+    if requested.is_absolute():
+        return str(candidate)
+    if requested.parts and requested.parts[0].lower() == "database":
+        requested = Path(*requested.parts[1:])
+    candidate = (DATABASE_DIR / requested).resolve()
+    if not candidate.is_relative_to(DATABASE_DIR):
+        raise ValueError("Relative DATABASE_PATH must stay inside the database directory")
+    return str(candidate)
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover
@@ -46,7 +79,7 @@ class Settings:
     max_mqtt_bytes: int = 65536
 
     # SQLite.
-    database_path: str = os.getenv("DATABASE_PATH", "rf_gateway.db")
+    database_path: str = field(default_factory=resolve_database_path)
 
     # Room and editable grid CELL SIZE. The Gateway automatically derives
     # the number of columns/rows from the room dimensions.
@@ -159,4 +192,4 @@ DEFAULT_SETTINGS = Settings(
 
 
 def default_config_path() -> Path:
-    return Path(DEFAULT_SETTINGS.database_path).resolve()
+    return Path(resolve_database_path(DEFAULT_SETTINGS.database_path))
