@@ -488,20 +488,3 @@ API node: GET /, /api/status, /api/config; POST /api/config, /api/restart,
 API Gateway: GET /health, /api/v1/nodes, /api/v1/room,
 /api/v1/localization/latest, /api/v1/epochs/quality, /api/v1/raw/export;
 POST /api/v1/room; WebSocket /ws/v1/sessions/{session_id}.
-
-## 13. Ghi chú dọn project và khôi phục
-
-Đã gom tài liệu vào README này, chuyển bảng IP, bỏ tài liệu rời/trùng, test,
-simulator, dependencies test, payload mẫu và cache Python. Giữ source chạy,
-cấu hình, .venv, database và dữ liệu đo.
-
-Bản sao README cũ cùng tài liệu/test bị xóa nằm tại
-**.local-backup/cleanup-20261102.zip**, giữ đúng đường dẫn tương đối để lấy riêng
-từng file khôi phục. Cấu hình trước refactor còn ở
-.local-backup/config.before-refactor.h nếu có. Backup có thể chứa mật khẩu trong
-ghi chú cũ; chỉ giữ cục bộ, không chia sẻ/commit. Cache tự sinh lại khi chạy.
-
-Trước khi gỡ test, bản refactor đã build esp32dev và qua 23 test, gồm Mosquitto
-loopback → SQLite → HTTP/WebSocket. Người dùng xác nhận hệ thống chạy được sau
-khi sửa broker listener. Đây không phải báo cáo sai số định vị hay tỷ lệ mất
-frame đo thật; cần buổi đo có ground truth theo mục 9.
