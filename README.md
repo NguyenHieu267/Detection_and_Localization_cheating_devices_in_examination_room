@@ -20,7 +20,17 @@ Ghi lại thông tin của Wi-Fi đang kết nối:
 | BSSID | `netsh wlan show interfaces` → BSSID | MAC mục tiêu của điện thoại phát hotspot |
 | Channel | `netsh wlan show interfaces` → Channel | Kiểm tra kênh trên ESP32 |
 
-Ví dụ đang dùng: IPv4 **172.20.10.3**, BSSID **26:67:F7:59:85:A1**, kênh **6**. Thay các giá trị ví dụ bằng thông số vừa đọc nếu khác. Không lấy Physical address của laptop làm MAC mục tiêu.
+Không lấy Physical address của laptop làm MAC mục tiêu. BSSID có thể đổi khi bật lại hotspot; luôn dùng giá trị vừa đọc.
+
+**IPv4 Wi-Fi → MQTT host** (lệnh script chạy: `ipconfig`):
+
+![Lấy IPv4 laptop tại Wireless LAN adapter Wi-Fi](assets/readme/mqtt-host.png)
+
+**BSSID → Target MAC** (lệnh script chạy: `netsh wlan show interfaces`):
+
+![Lấy BSSID hotspot làm Target MAC](assets/readme/target-mac.png)
+
+Các hình chụp ở thời điểm khác nhau: ảnh BSSID là `EE:80:A9:13:17:4D`, còn ảnh cấu hình bên dưới dùng MAC cũ. Điền BSSID hiện tại giống nhau trên cả 4 ESP32 và gateway, không chép cố định từ ảnh.
 
 ## 2. Chuẩn bị laptop — chỉ làm lần đầu
 
@@ -51,7 +61,7 @@ Stop-Service mosquitto
 
 1. Mở folder `firmware` trong VSCode có PlatformIO. Cắm một ESP32 qua USB.
 2. Vào **PlatformIO → Project Tasks → esp32dev → General → Build**.
-3. Chọn **Upload and Monitor**. Nếu board không vào chế độ nạp, giữ BOOT lúc Connecting rồi thả khi bắt đầu ghi.
+3. Chọn **Upload and Monitor**.
 4. Khi chưa có cấu hình Wi-Fi, ESP32 phát mạng **RF-Setup-…** không mật khẩu. Kết nối laptop vào mạng đó, mở **http://192.168.4.1**.
 5. Điền bảng dưới rồi bấm **Save and restart**. Kết nối laptop lại hotspot điện thoại.
 6. Lặp lại cho đủ 4 con. Nếu ESP32 đã lưu Wi-Fi, mở IP hiện trong Serial ở dòng `[WIFI] STA IP=…` để chỉnh; giữ BOOT khoảng 3 giây để xóa cấu hình nếu cần làm lại.
@@ -72,6 +82,20 @@ Stop-Service mosquitto
 | `mqtt_batch_max_bytes` | Giữ `4096` |
 
 Không chọn **Open Wi-Fi** nếu hotspot có mật khẩu. Không cần sửa code theo từng node; cấu hình được lưu trên ESP32. `DEVICE_TOKEN_SALT` trong firmware và gateway phải giống nhau; giữ mặc định nếu chưa thay đổi.
+
+**Cấu hình cũ lưu trong NVS** — thay Wi-Fi, MQTT host và Target MAC theo mạng hiện tại:
+
+<img src="assets/readme/config-before.jpg" alt="Trang cấu hình ESP32 với thông tin đã lưu trong NVS" width="420">
+
+**Sau khi điền và bấm Save and restart**, trang trả về `saved: true, restarting: true`:
+
+<img src="assets/readme/config-saved.jpg" alt="Cấu hình ESP32 và thông báo lưu thành công, khởi động lại" width="420">
+
+**Sau khi ESP32 kết nối hotspot**, đọc IP của ESP tại dòng `[WIFI] STA IP=…` để mở lại web cấu hình. Đây là IP ESP32, không phải MQTT host:
+
+![Serial sau khi ESP32 kết nối hotspot](assets/readme/hotspot-connected.png)
+
+Ảnh Serial có lỗi MQTT vì broker chưa sẵn sàng lúc chụp. Kết nối Wi-Fi thành công chưa có nghĩa MQTT đã kết nối; tiếp tục mục 4.
 
 ## 4. Chạy hệ thống — giữ 2 terminal mở
 
@@ -114,7 +138,7 @@ Dữ liệu lưu tại **database/rf_gateway.db**. Giữ hai terminal ở mục 
 
 ## 6. Nếu web chưa nhận node
 
-Mở terminal thứ 3 để kiểm tra, thay IP nếu laptop đã đổi:
+Mở terminal thứ 3 để kiểm tra; nhập IPv4 laptop khi được hỏi:
 
 ```powershell
 & "C:\Program Files\mosquitto\mosquitto_sub.exe" -h 172.20.10.3 -p 1883 -t "rf/#" -v
