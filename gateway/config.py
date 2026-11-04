@@ -78,6 +78,11 @@ class Settings:
     min_overlap_ms: int = int(os.getenv("MIN_OVERLAP_MS", "600"))
     max_mqtt_bytes: int = 65536
 
+    # Filter coordinates after WCL, leaving RSSI and confidence unchanged.
+    position_filter_mode: str = os.getenv("POSITION_FILTER_MODE", "ema").strip().lower()
+    position_ema_alpha: float = float(os.getenv("POSITION_EMA_ALPHA", "0.35"))
+    position_ema_reset_gap: int = int(os.getenv("POSITION_EMA_RESET_GAP", "3"))
+
     # SQLite.
     database_path: str = field(default_factory=resolve_database_path)
 
@@ -106,6 +111,14 @@ class Settings:
     max_ws_clients: int = int(os.getenv("MAX_WS_CLIENTS", "64"))
 
     node_positions: tuple[NodePosition, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if self.position_filter_mode not in {"ema", "off"}:
+            raise ValueError("POSITION_FILTER_MODE must be ema or off")
+        if not 0 < self.position_ema_alpha <= 1:
+            raise ValueError("POSITION_EMA_ALPHA must be in (0, 1]")
+        if self.position_ema_reset_gap < 1:
+            raise ValueError("POSITION_EMA_RESET_GAP must be >= 1")
 
     @property
     def grid(self) -> GridConfig:
@@ -163,6 +176,9 @@ def build_settings(
         epoch_timeout_ms=base.epoch_timeout_ms,
         min_overlap_ms=base.min_overlap_ms,
         max_mqtt_bytes=base.max_mqtt_bytes,
+        position_filter_mode=base.position_filter_mode,
+        position_ema_alpha=base.position_ema_alpha,
+        position_ema_reset_gap=base.position_ema_reset_gap,
         database_path=base.database_path,
         room_width_m=float(room_width_m),
         room_length_m=float(room_length_m),

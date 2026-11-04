@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,6 +18,7 @@ from epoch_reconstructor import EpochReconstructor
 from localization import WCLLocalizationEngine
 from models import LocalizationResult, NodeReady, ObservationItem, RoomConfigRequest
 from mqtt_ingest import MqttGateway
+from position_filter import PositionEMA
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("rf-gateway")
@@ -84,6 +86,11 @@ class GatewayRuntime:
             self.settings = self.base_settings
 
         self.localizer = WCLLocalizationEngine(self.settings)
+        # Room changes run on asyncio, while MQTT/expiry can produce positions.
+        self.position_lock = threading.RLock()
+        self.position_filter = PositionEMA(
+            self.settings.position_ema_alpha, self.settings.position_ema_reset_gap
+        )
         self.ws_manager = WebSocketManager()
         self.reconstructor = EpochReconstructor(
             expected_nodes=set(EXPECTED_NODE_IDS),
@@ -116,15 +123,17 @@ class GatewayRuntime:
         return None
 
     def set_room(self, width_m: float, length_m: float, grid_cell_width_m: float, grid_cell_length_m: float) -> None:
-        self.settings = build_settings(
-            width_m,
-            length_m,
-            grid_cell_width_m=grid_cell_width_m,
-            grid_cell_length_m=grid_cell_length_m,
-            base=self.base_settings,
-        )
-        self.localizer = WCLLocalizationEngine(self.settings)
-        self.database.save_room_config(width_m, length_m, grid_cell_width_m, grid_cell_length_m)
+        with self.position_lock:
+            self.settings = build_settings(
+                width_m,
+                length_m,
+                grid_cell_width_m=grid_cell_width_m,
+                grid_cell_length_m=grid_cell_length_m,
+                base=self.base_settings,
+            )
+            self.localizer = WCLLocalizationEngine(self.settings)
+            self.position_filter.reset()
+            self.database.save_room_config(width_m, length_m, grid_cell_width_m, grid_cell_length_m)
         logger.info(
             "Room changed: %.2f x %.2f m -> cell %.2f x %.2f m -> grid %d cols x %d rows",
             width_m, length_m, grid_cell_width_m, grid_cell_length_m,
@@ -204,25 +213,42 @@ class GatewayRuntime:
             if not self.should_localize(device_token, len(merged)):
                 continue
 
-            estimate = self.localizer.localize(node_rssi)
-            if estimate is None:
-                continue
-
-            result = LocalizationResult(
-                track_id=device_token,
-                session_id=session_id,
-                epoch_id=epoch_id,
-                zone_id=estimate.zone_id,
-                x_m=round(estimate.x_m, 3),
-                y_m=round(estimate.y_m, 3),
-                confidence=round(estimate.confidence, 3),
-                nodes_used=estimate.nodes_used,
-                rssi_vector_dbm=node_rssi,
-                timestamp_ms=created_at_ms,
-                node_packet_count=node_packet_count,
-                queue_drop_count=self.reconstructor.last_quality.get("queue_drop_count", {}),
-                overlap_ms=self.reconstructor.last_quality.get("overlap_ms", 0),
-            )
+            with self.position_lock:
+                estimate = self.localizer.localize(node_rssi)
+                if estimate is None:
+                    continue
+                x, y = estimate.x_m, estimate.y_m
+                mode = self.settings.position_filter_mode
+                if mode == "ema":
+                    filtered = self.position_filter.update(session_id, device_token, epoch_id, x, y)
+                    if filtered is None:
+                        continue
+                    x, y = filtered
+                # The displayed zone follows the displayed point, not the raw WCL point.
+                zone = self.localizer.zone_id(x, y) if mode == "ema" else estimate.zone_id
+                result = LocalizationResult(
+                    track_id=device_token,
+                    session_id=session_id,
+                    epoch_id=epoch_id,
+                    zone_id=zone,
+                    x_m=round(x, 3),
+                    y_m=round(y, 3),
+                    raw_x_m=round(estimate.x_m, 3),
+                    raw_y_m=round(estimate.y_m, 3),
+                    raw_zone_id=estimate.zone_id,
+                    filtered_x_m=round(x, 3),
+                    filtered_y_m=round(y, 3),
+                    filtered_zone_id=zone,
+                    position_filter_mode=mode,
+                    position_ema_alpha=self.settings.position_ema_alpha if mode == "ema" else None,
+                    confidence=round(estimate.confidence, 3),
+                    nodes_used=estimate.nodes_used,
+                    rssi_vector_dbm=node_rssi,
+                    timestamp_ms=created_at_ms,
+                    node_packet_count=node_packet_count,
+                    queue_drop_count=self.reconstructor.last_quality.get("queue_drop_count", {}),
+                    overlap_ms=self.reconstructor.last_quality.get("overlap_ms", 0),
+                )
 
             self.database.upsert_localization_update(
                 session_id=result.session_id,
@@ -235,6 +261,14 @@ class GatewayRuntime:
                 nodes_used=result.nodes_used,
                 rssi_vector=result.rssi_vector_dbm,
                 created_at_ms=result.timestamp_ms,
+                raw_x_m=result.raw_x_m,
+                raw_y_m=result.raw_y_m,
+                raw_zone_id=result.raw_zone_id,
+                filtered_x_m=result.filtered_x_m,
+                filtered_y_m=result.filtered_y_m,
+                filtered_zone_id=result.filtered_zone_id,
+                position_filter_mode=result.position_filter_mode,
+                position_ema_alpha=result.position_ema_alpha,
             )
 
             if self.ws_manager.loop is not None:
@@ -299,6 +333,11 @@ async def health() -> dict[str, Any]:
         "expected_nodes": list(EXPECTED_NODE_IDS),
         "nodes": runtime.node_status(),
         "target_configured": runtime.target_token is not None,
+        "position_filter": {
+            "mode": runtime.settings.position_filter_mode,
+            "alpha": runtime.settings.position_ema_alpha,
+            "reset_gap_epochs": runtime.settings.position_ema_reset_gap,
+        },
         "room": {
             "width_m": runtime.settings.room_width_m,
             "length_m": runtime.settings.room_length_m,

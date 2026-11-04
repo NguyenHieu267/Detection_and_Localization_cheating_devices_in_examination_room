@@ -40,7 +40,8 @@
   .legend { display:flex; gap:18px; color:#9ba6b5; font-size:12px; flex-wrap:wrap; }
   .legend span { display:flex; align-items:center; gap:6px; }
   .swatch { width:10px; height:10px; border-radius:50%; display:inline-block; }
-  .swatch.white { background:#fff; }
+  .swatch.orange { background:#fb923c; }
+  .swatch.blue { background:#38bdf8; }
   .swatch.green { background:#4ade80; }
   .swatch.red { background:#ef4444; }
   .map-node-label { font-weight:700; }
@@ -64,7 +65,8 @@
     <button id="apply" style="margin-top:10px">Apply room + grid</button>
     <div id="configText" class="sub" style="margin:12px 0 0"></div>
     <div class="legend" style="margin-top:10px">
-      <span><i class="swatch white"></i> Localized device</span>
+      <span><i class="swatch orange"></i> Raw WCL</span>
+      <span><i class="swatch blue"></i> Filtered device</span>
       <span><i class="swatch green"></i> ESP32 online</span>
       <span><i class="swatch red"></i> ESP32 offline</span>
     </div>
@@ -87,6 +89,9 @@
         <div class="stat"><small>Zone</small><strong id="zone">—</strong></div>
         <div class="stat"><small>X (m)</small><strong id="x">—</strong></div>
         <div class="stat"><small>Y (m)</small><strong id="y">—</strong></div>
+        <div class="stat"><small>Raw X / Y (m)</small><strong id="rawXY">—</strong></div>
+        <div class="stat"><small>Filtered X / Y (m)</small><strong id="filteredXY">—</strong></div>
+        <div class="stat"><small>Position filter</small><strong id="positionFilter">—</strong></div>
         <div class="stat"><small>Nodes Used</small><strong id="nodes">—</strong></div>
         <div class="stat"><small>Confidence</small><strong id="confidence">—</strong></div>
         <div class="stat"><small>Epoch</small><strong id="epoch">—</strong></div>
@@ -238,10 +243,15 @@ function drawRoom() {
   out += `<text x="${ox-46}" y="${oy+rh/2}" fill="#8995a5" text-anchor="middle" font-size="16" transform="rotate(-90 ${ox-46} ${oy+rh/2})">length ${room.length_m.toFixed(2)} m</text>`;
 
   if (lastResult) {
-    const tx=ox+lastResult.x_m*scale, ty=oy+lastResult.y_m*scale;
-    out += `<circle cx="${tx}" cy="${ty}" r="18" fill="none" stroke="#ffffff" stroke-width="4" opacity=".55"/>`;
-    out += `<circle cx="${tx}" cy="${ty}" r="8" fill="#ffffff" class="dot"/>`;
-    out += `<text x="${tx+13}" y="${ty-15}" fill="#ffffff" font-weight="700" font-size="18">DEVICE</text>`;
+    // Older history falls back to the original coordinates, without inventing EMA results.
+    const rx=ox+(lastResult.raw_x_m ?? lastResult.x_m)*scale;
+    const ry=oy+(lastResult.raw_y_m ?? lastResult.y_m)*scale;
+    const tx=ox+(lastResult.filtered_x_m ?? lastResult.x_m)*scale;
+    const ty=oy+(lastResult.filtered_y_m ?? lastResult.y_m)*scale;
+    out += `<circle cx="${rx}" cy="${ry}" r="11" fill="#fb923c" opacity=".85"/>`;
+    out += `<circle cx="${tx}" cy="${ty}" r="18" fill="none" stroke="#38bdf8" stroke-width="3" opacity=".55"/>`;
+    out += `<circle cx="${tx}" cy="${ty}" r="7" fill="#38bdf8" class="dot"/>`;
+    out += `<text x="${tx+13}" y="${ty-15}" fill="#38bdf8" font-weight="700" font-size="18">DEVICE</text>`;
   }
 
   svg.innerHTML=out;
@@ -253,6 +263,9 @@ function renderResult(r) {
   $('zone').textContent=r.zone_id || '—';
   $('x').textContent=Number(r.x_m).toFixed(2);
   $('y').textContent=Number(r.y_m).toFixed(2);
+  $('rawXY').textContent=`${Number(r.raw_x_m ?? r.x_m).toFixed(2)} / ${Number(r.raw_y_m ?? r.y_m).toFixed(2)}`;
+  $('filteredXY').textContent=`${Number(r.filtered_x_m ?? r.x_m).toFixed(2)} / ${Number(r.filtered_y_m ?? r.y_m).toFixed(2)}`;
+  $('positionFilter').textContent=r.position_filter_mode==='ema' ? `EMA alpha=${r.position_ema_alpha}` : 'OFF';
   $('nodes').textContent=r.nodes_used;
   $('confidence').textContent=(Number(r.confidence)*100).toFixed(0)+'%';
   $('epoch').textContent=r.epoch_id;

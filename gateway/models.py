@@ -67,6 +67,16 @@ class LocalizationResult(StrictModel):
     queue_drop_count: dict[str, int] = Field(default_factory=dict)
     overlap_ms: int = 0
 
+    # Defaults allow older callers/history without claiming that EMA was applied.
+    raw_x_m: float | None = None
+    raw_y_m: float | None = None
+    raw_zone_id: str | None = None
+    filtered_x_m: float | None = None
+    filtered_y_m: float | None = None
+    filtered_zone_id: str | None = None
+    position_filter_mode: Literal["ema", "off"] = "off"
+    position_ema_alpha: float | None = None
+
 
 class EpochDeviceEvidence(StrictModel):
     session_id: StrictStr

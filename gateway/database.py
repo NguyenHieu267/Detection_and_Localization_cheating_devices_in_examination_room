@@ -92,6 +92,17 @@ class Database:
             )
 
             # Lightweight migration for databases created by earlier MVP builds.
+            # Nullable columns preserve old records and never touch raw_chunks.
+            position_columns = {
+                "raw_x_m": "REAL", "raw_y_m": "REAL", "raw_zone_id": "TEXT",
+                "filtered_x_m": "REAL", "filtered_y_m": "REAL", "filtered_zone_id": "TEXT",
+                "position_filter_mode": "TEXT", "position_ema_alpha": "REAL",
+            }
+            existing = {row[1] for row in self.conn.execute("PRAGMA table_info(localization_updates)")}
+            for name, sql_type in position_columns.items():
+                if name not in existing:
+                    self.conn.execute(f"ALTER TABLE localization_updates ADD COLUMN {name} {sql_type}")
+
             node_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(node_status)").fetchall()}
             if "last_seen_ms" not in node_columns:
                 self.conn.execute("ALTER TABLE node_status ADD COLUMN last_seen_ms INTEGER")
@@ -281,8 +292,10 @@ class Database:
                 INSERT INTO localization_updates(
                     session_id, epoch_id, track_id, zone_id,
                     x_m, y_m, confidence, nodes_used,
-                    rssi_vector_json, created_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    rssi_vector_json, created_at_ms,
+                    raw_x_m, raw_y_m, raw_zone_id, filtered_x_m, filtered_y_m, filtered_zone_id,
+                    position_filter_mode, position_ema_alpha
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id, epoch_id, track_id) DO UPDATE SET
                     zone_id=excluded.zone_id,
                     x_m=excluded.x_m,
@@ -290,12 +303,25 @@ class Database:
                     confidence=excluded.confidence,
                     nodes_used=excluded.nodes_used,
                     rssi_vector_json=excluded.rssi_vector_json,
-                    created_at_ms=excluded.created_at_ms
+                    created_at_ms=excluded.created_at_ms,
+                    raw_x_m=excluded.raw_x_m,
+                    raw_y_m=excluded.raw_y_m,
+                    raw_zone_id=excluded.raw_zone_id,
+                    filtered_x_m=excluded.filtered_x_m,
+                    filtered_y_m=excluded.filtered_y_m,
+                    filtered_zone_id=excluded.filtered_zone_id,
+                    position_filter_mode=excluded.position_filter_mode,
+                    position_ema_alpha=excluded.position_ema_alpha
                 """,
                 (
                     kwargs["session_id"], kwargs["epoch_id"], kwargs["track_id"], kwargs["zone_id"],
                     kwargs["x_m"], kwargs["y_m"], kwargs["confidence"], kwargs["nodes_used"],
                     json.dumps(kwargs["rssi_vector"], separators=(",", ":")), kwargs["created_at_ms"],
+                    kwargs.get("raw_x_m", kwargs["x_m"]), kwargs.get("raw_y_m", kwargs["y_m"]),
+                    kwargs.get("raw_zone_id", kwargs["zone_id"]),
+                    kwargs.get("filtered_x_m", kwargs["x_m"]), kwargs.get("filtered_y_m", kwargs["y_m"]),
+                    kwargs.get("filtered_zone_id", kwargs["zone_id"]),
+                    kwargs.get("position_filter_mode", "off"), kwargs.get("position_ema_alpha"),
                 ),
             )
 
@@ -305,7 +331,15 @@ class Database:
                 """
                 SELECT session_id, epoch_id, track_id, zone_id,
                        x_m, y_m, confidence, nodes_used,
-                       rssi_vector_json, created_at_ms
+                       rssi_vector_json, created_at_ms,
+                       COALESCE(raw_x_m, x_m) AS raw_x_m,
+                       COALESCE(raw_y_m, y_m) AS raw_y_m,
+                       COALESCE(raw_zone_id, zone_id) AS raw_zone_id,
+                       COALESCE(filtered_x_m, x_m) AS filtered_x_m,
+                       COALESCE(filtered_y_m, y_m) AS filtered_y_m,
+                       COALESCE(filtered_zone_id, zone_id) AS filtered_zone_id,
+                       COALESCE(position_filter_mode, 'off') AS position_filter_mode,
+                       position_ema_alpha
                 FROM localization_updates
                 ORDER BY created_at_ms DESC, epoch_id DESC
                 LIMIT ?

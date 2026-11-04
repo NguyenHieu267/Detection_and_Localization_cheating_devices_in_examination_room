@@ -151,3 +151,48 @@ Mở terminal thứ 3 để kiểm tra; nhập IPv4 laptop khi được hỏi:
 Terminal `mosquitto_sub` chỉ để kiểm tra, có thể tắt. Không tắt terminal `mosquitto.exe` hoặc gateway khi đang đo.
 
 Lần chạy sau: kết nối hotspot → kiểm tra lại IPv4/BSSID → cập nhật cấu hình nếu đổi → cấp nguồn 4 ESP32 → chạy mục 4 → mở web. Không cần flash lại nếu firmware không đổi.
+
+## 7. Làm mượt vị trí bằng EMA
+
+Gateway mặc định bật **EMA alpha=0.35** sau khi WCL tính vị trí. Không cần nạp lại ESP32 hoặc cài thêm thư viện. Giữ Mosquitto chạy, khởi động lại gateway và tải lại dashboard để dùng bản mới.
+
+- **Chấm cam:** vị trí WCL gốc (Raw).
+- **Chấm xanh dương DEVICE:** vị trí đã lọc (Filtered), dùng làm vị trí chính và tính Zone.
+- `confidence` vẫn theo WCL; điểm mượt hơn không đồng nghĩa sai số nhỏ hơn.
+
+Để cấu hình lâu dài, thêm/sửa các dòng này trong file **`.env` ở thư mục gốc project** (tạo file nếu chưa có, giữ nguyên các thông số mạng hiện tại):
+
+```dotenv
+POSITION_FILTER_MODE=ema
+POSITION_EMA_ALPHA=0.35
+POSITION_EMA_RESET_GAP=3
+```
+
+Hoặc đặt trực tiếp trong **cùng terminal chạy gateway**, trước lệnh khởi động:
+
+```powershell
+$env:POSITION_FILTER_MODE = "ema"
+$env:POSITION_EMA_ALPHA = "0.35"
+$env:POSITION_EMA_RESET_GAP = "3"
+
+& .\.venv\Scripts\python.exe -m uvicorn main:app --app-dir gateway --host 0.0.0.0 --port 8000
+```
+
+Biến môi trường trong terminal được ưu tiên hơn `.env`. Sau mỗi lần đổi tham số, dừng gateway bằng Ctrl+C rồi chạy lại.
+
+- **Tắt lọc:** đổi `POSITION_FILTER_MODE` thành `off`. Vị trí và Zone dùng đúng WCL gốc; hai chấm trùng nhau.
+- **Thử bám chuyển động nhanh hơn:** đổi alpha thành `0.5`; giá trị hợp lệ là `0 < alpha <= 1`.
+- Mỗi session + thiết bị có trạng thái riêng. Lần đầu nhận nguyên vị trí WCL; epoch cũ/trùng không cập nhật EMA. Theo quy ước gap trong yêu cầu, khoảng cách epoch ID **lớn hơn 3** sẽ reset, ví dụ `100 → 104`. Đổi phòng hoặc khởi động lại gateway cũng reset.
+
+Kiểm tra `/health` có mục `position_filter`. `/api/v1/localization/latest` và WebSocket đều có `raw_x_m`, `raw_y_m`, `raw_zone_id`, `filtered_x_m`, `filtered_y_m`, `filtered_zone_id`, chế độ và alpha. Các trường `x_m/y_m/zone_id` là vị trí đang dùng để hiển thị.
+
+SQLite tự thêm các cột còn thiếu trong `localization_updates` khi gateway khởi động. Dữ liệu RSSI raw không bị thay đổi. Lịch sử trước EMA hiển thị Raw = Filtered và OFF, không tự lọc ngược dữ liệu cũ.
+
+Chạy kiểm tra cơ bản (chỉ dùng database tạm, không ghi database đo):
+
+```powershell
+& .\.venv\Scripts\python.exe -m compileall -q gateway
+& .\.venv\Scripts\python.exe scripts/check_position_filter.py
+```
+
+Để đánh giá thực tế: đứng yên tại khoảng 5 điểm đã biết, mỗi điểm 60–120 giây; sau đó đi theo tuyến đánh dấu và dừng tại mốc. So sánh OFF, EMA 0.35 và EMA 0.5 về độ rung, độ trễ và sai số so với vị trí thật. MAD/Beacon-only chưa được thêm trong đợt này; median RSSI và quy tắc ghép đủ 4 node giữ nguyên.
