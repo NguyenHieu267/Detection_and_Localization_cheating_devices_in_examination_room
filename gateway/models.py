@@ -51,6 +51,12 @@ class RoomConfigRequest(StrictModel):
     grid_cell_length_m: float = Field(gt=0.1, le=1000.0)
 
 
+class MeasurementRequest(StrictModel):
+    session_id: StrictStr = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    zone: StrictStr = Field(pattern=r"^Z[1-9][0-9]*$")
+    confirm_center: Literal[True]
+
+
 class LocalizationResult(StrictModel):
     track_id: StrictStr
     session_id: StrictStr

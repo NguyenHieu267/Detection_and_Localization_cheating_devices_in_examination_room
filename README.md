@@ -117,82 +117,125 @@ cd "C:\Users\Admin\Downloads\do an"
 
 $env:MQTT_HOST = "172.20.10.3"
 $env:MQTT_PORT = "1883"
-$env:TARGET_DEVICE_MAC = "26:67:F7:59:85:A1"
-$env:TARGET_DEVICE_TOKEN = ""
-$env:DATABASE_PATH = "database/rf_gateway.db"
+$env:TARGET_DEVICE_MAC = "CA:88:82:14:E5:79"
+$env:DATABASE_PATH = "database/house_collect.db"
 
 & .\.venv\Scripts\python.exe -m uvicorn main:app --app-dir gateway --host 0.0.0.0 --port 8000
 ```
 
 Chờ log `MQTT connected; subscriptions installed`. Cấu hình gateway ở trên dùng cùng IPv4 laptop với các ESP32 cho cả Android và iPhone.
 
-## 5. Mở web và đo
+## 5. Mở web và chọn chế độ
 
-1. Mở **http://127.0.0.1:8000**. Dùng session **session-dev-001**, giống cấu hình ESP32.
-2. Kiểm tra **http://127.0.0.1:8000/health**: `mqtt_connected: true`, cả 4 node `online: true`.
-3. Trên trang Status của mỗi ESP32, kiểm tra `wifi_connected`, `mqtt_connected`, `clock_synced` đều `true`.
-4. Đặt các node ở 4 góc: ESP01 `(0,0)`, ESP02 `(rộng,0)`, ESP03 `(0,dài)`, ESP04 `(rộng,dài)`. Nhập đúng kích thước phòng và ô lưới trên dashboard.
-5. Chờ **Nodes Used = 4** và có RSSI vector/vị trí rồi mới ghi nhận kết quả. Di chuyển điện thoại phát hotspot tới các điểm đã biết để so sánh vị trí thực với kết quả.
+Giữ hai terminal ở mục 4 chạy. Mở **http://127.0.0.1:8000**.
 
-Dữ liệu lưu tại **database/rf_gateway.db**. Giữ hai terminal ở mục 4 chạy trong suốt buổi đo.
+Ở **cuối gateway/main.py**, trước dòng `runtime = GatewayRuntime()`, chọn:
 
-## 6. Nếu web chưa nhận node
+~~~python
+COLLECTION_MODE = False
+~~~
 
-Mở terminal thứ 3 để kiểm tra; nhập IPv4 laptop khi được hỏi:
+| Cờ | Hoạt động |
+|---|---|
+| `False` | Realtime cũ: RSSI → ghép epoch → WCL → EMA → vị trí trên web |
+| `True` | Collection: chọn ô, thu raw 30 giây và xuất bảng RSSI vector 8 cột kèm Ground Truth |
 
-```powershell
+Sau khi sửa cờ: **Ctrl+C dừng gateway → chạy lại lệnh gateway ở mục 4 → tải lại web**. Nếu vẫn thấy giao diện cũ, kiểm tra cờ là `True` và bấm Ctrl+F5.
+
+**Không cần nạp lại firmware ESP32.** Wi-Fi, MQTT, Target MAC và lịch thu/gửi hiện tại giữ nguyên.
+
+Đặt 4 node ở các góc: ESP01 (0,0), ESP02 (rộng,0), ESP03 (0,dài), ESP04 (rộng,dài). Nhập đúng kích thước phòng và ô lưới, bấm Apply. Session trên web phải giống cả 4 ESP32.
+
+Ở Realtime, chờ đủ 4 node online và Nodes Used = 4. Chấm cam là WCL gốc, chấm xanh là vị trí sau EMA.
+
+## 6. Collection — bấm là đo
+
+1. Đặt `COLLECTION_MODE = True` và chạy lại gateway.
+2. Chờ **4/4 READY**: các node có MQTT mới, đúng session và NTP hợp lệ.
+3. Click chọn ô. Đặt điện thoại đúng **chấm vàng ở tâm ô**, kiểm tra Zone / True X / True Y.
+4. Đánh dấu xác nhận, bấm **Start Measurement (30s)**. Gateway bắt đầu ngay khi nhận lệnh; không đếm ngược trước khi đo.
+5. Giữ điện thoại yên trong 30 giây. Đợi `Measuring → Receiving → Completed/Partial`.
+6. Chọn ô khác hoặc đo lại ô cũ. Mỗi lượt có ID và số run riêng, không ghi đè.
+7. Bấm **Export Dataset CSV (8 columns)** để tải bảng chính đúng định dạng yêu cầu. **Export Raw Frames CSV (details)** là file chi tiết từng frame, dùng để đối chiếu.
+
+**Hai bảng riêng:** mỗi frame vẫn giữ nguyên RSSI, timestamp thu và node trong bảng raw. Bảng `rssi_vectors` lấy median của mỗi node trong cửa sổ Unix 1 giây để tạo một dòng 4 node. Nhận -51, -53, -70 thì raw vẫn có đủ ba giá trị; ô vector đại diện là -53. Không chạy EMA/WCL trong Collection và không ghi đè raw bằng median.
+
+**Bảng chính trên web và CSV có đúng 8 cột:**
+
+`session | timestamp | Zone | ESP01 - RSSI | ESP02 - RSSI | ESP03 - RSSI | ESP04 - RSSI | Vector RSSI`
+
+- `timestamp`: Unix ms đầu cửa sổ 1 giây, không phải thời gian MQTT tới.
+- Thứ tự vector luôn ESP01, ESP02, ESP03, ESP04. Thiếu node: SQLite/CSV `NULL`, JSON `null`; không điền giá trị giả.
+- `Zone`: ô Ground Truth đã chọn, không phải zone dự đoán. Mỗi lượt có ID riêng trong DB, kể cả đo lại cùng ô.
+- Start vẫn bắt đầu ngay; lượt 30 giây không tròn giây có thể chạm 31 cửa sổ Unix. Mẫu ngoài khoảng đo không được đưa vào vector có Ground Truth của lượt đó.
+
+**Receiving trong 3 giây cuối:** chỉ đợi gói đã thu đi tới gateway, không đo thêm. Mẫu thu ngoài 30 giây không được gắn vào lượt đó. Chờ Receiving xong rồi chuyển ô.
+
+**Gán theo giờ thu:** ví dụ lượt A từ 10:00:00 đến 10:00:30; mẫu thu lúc 10:00:29 nhưng tới lúc 10:00:31 vẫn thuộc lượt A, không thuộc ô của lượt B. Mẫu tới sau Receiving vẫn được lưu đúng lượt cũ.
+
+**Một SQLite duy nhất:** `database/rf_gateway.db`.
+
+- `measurements`: ID lượt, session, zone, tâm ô True X/Y, thời gian, trạng thái và cấu hình phòng/node.
+- `raw_rssi_samples`: từng frame với RSSI, timestamp thu, node, loại frame, thời gian gateway nhận và ID lượt.
+- `rssi_vectors`: các dòng median/NULL theo cửa sổ Unix, khóa theo session + lượt đo + timestamp; giữ riêng với raw.
+- Dữ liệu lịch sử được giữ nguyên. Sau khi cập nhật code và chạy lại gateway, vector của những lượt đã thu được tự dựng từ raw có sẵn, không cần đo lại.
+
+CSV dataset chính chỉ xuất các lượt đã đăng ký đo, nên không lẫn những frame trước Start có Zone trống. CSV raw chi tiết vẫn có thể chứa mẫu ngoài lượt đo với ID lượt/Ground Truth trống; thêm True X/Y, run và metadata phòng. Dataset không ghi MAC/device token; vẫn chọn mục tiêu theo Target MAC/salt cũ.
+
+`Completed`: có mẫu của cả 4 node trong mỗi giây của lượt đo, không ghi nhận gián đoạn/rớt mẫu. Chỉ đếm để kiểm tra chất lượng, không sửa RSSI; không bảo đảm nhận mọi frame vô tuyến. Thiếu dữ liệu thì báo `Partial` và vẫn giữ mẫu đã nhận.
+
+## 7. Nếu chưa nhận dữ liệu
+
+- `/health` cần có `mqtt_connected: true`. Khi Collection, xem 4/4 READY trên web.
+- ESP32 dùng IPv4 laptop làm MQTT host; gateway phải vào cùng broker.
+- Kiểm tra session, Target MAC/BSSID hiện tại, salt và `clock_synced: true`.
+- Terminal kiểm tra bên dưới dùng IP ví dụ; thay nếu IPv4 laptop khác:
+
+~~~powershell
 & "C:\Program Files\mosquitto\mosquitto_sub.exe" -h 172.20.10.3 -p 1883 -t "rf/#" -v
-```
+~~~
 
-- Có dòng `rf/v1/nodes/ESP01/observation {...}`: broker đã nhận dữ liệu. Kiểm tra gateway dùng cùng MQTT host; xem log có `MQTT message rejected` không.
-- Không có dữ liệu: kiểm tra MQTT host trên ESP32, broker và firewall; khởi động lại một ESP32 để thử.
-- Node online nhưng chưa có vị trí: kiểm tra BSSID mục tiêu, salt, session, đồng bộ giờ và đủ mẫu từ cả 4 node.
+Có observation nhưng web chưa nhận: xem log gateway có `MQTT message rejected` hoặc lỗi SQLite không. Không có bản tin: kiểm tra Mosquitto, firewall và MQTT host trên ESP32.
 
-Terminal `mosquitto_sub` chỉ để kiểm tra, có thể tắt. Không tắt terminal `mosquitto.exe` hoặc gateway khi đang đo.
+Có thể tắt terminal `mosquitto_sub`; phải giữ Mosquitto và gateway chạy khi đo. Firmware cũ dùng QoS0 và Queue hữu hạn, vẫn có thể mất mẫu khi mạng lỗi, RAM đầy hoặc mất điện.
 
-Lần chạy sau: kết nối hotspot → kiểm tra lại IPv4/BSSID → cập nhật cấu hình nếu đổi → cấp nguồn 4 ESP32 → chạy mục 4 → mở web. Không cần flash lại nếu firmware không đổi.
+## 8. Các file scripts
 
-## 7. Làm mượt vị trí bằng EMA
+| File | Công dụng | Khi đo có cần chạy? |
+|---|---|---|
+| `start_mqtt.bat` | Mở Mosquitto bằng `scripts/mosquitto.conf` | Có thể thay lệnh terminal 1 |
+| `start_gateway.bat` | Mở gateway bằng Python trong `.venv` của project | Có thể thay lệnh terminal 2 |
+| `check_collection.py` | Kiểm tra Start ngay, raw không đổi, đo lại, mẫu trễ, chống trùng và DB | Không; chỉ kiểm tra code |
+| `check_position_filter.py` | Kiểm tra WCL/EMA, OFF, reset và DB cũ | Không; chỉ kiểm tra code |
 
-Gateway mặc định bật **EMA alpha=0.35** sau khi WCL tính vị trí. Không cần nạp lại ESP32 hoặc cài thêm thư viện. Giữ Mosquitto chạy, khởi động lại gateway và tải lại dashboard để dùng bản mới.
+Hai file kiểm tra có logic kiểm thử riêng, dùng DB tạm; gateway không gọi chúng khi đo. Hai file .bat có công dụng nên được giữ lại. Đặt biến MQTT/Target theo mục 4 trong PowerShell trước khi gọi script gateway; script kế thừa các biến đó.
 
-- **Chấm cam:** vị trí WCL gốc (Raw).
-- **Chấm xanh dương DEVICE:** vị trí đã lọc (Filtered), dùng làm vị trí chính và tính Zone.
-- `confidence` vẫn theo WCL; điểm mượt hơn không đồng nghĩa sai số nhỏ hơn.
+~~~powershell
+# Terminal 1:
+.\scripts\start_mqtt.bat
 
-Để cấu hình lâu dài, thêm/sửa các dòng này trong file **`.env` ở thư mục gốc project** (tạo file nếu chưa có, giữ nguyên các thông số mạng hiện tại):
+# Terminal 2, sau khi đặt biến môi trường ở mục 4:
+.\scripts\start_gateway.bat
+~~~
 
-```dotenv
-POSITION_FILTER_MODE=ema
-POSITION_EMA_ALPHA=0.35
-POSITION_EMA_RESET_GAP=3
-```
+Không chạy cả lệnh dài lẫn .bat cho cùng chương trình để tránh trùng broker/gateway.
 
-Hoặc đặt trực tiếp trong **cùng terminal chạy gateway**, trước lệnh khởi động:
+Lệnh kiểm tra code — không bắt buộc cho mỗi buổi đo:
 
-```powershell
-$env:POSITION_FILTER_MODE = "ema"
-$env:POSITION_EMA_ALPHA = "0.35"
-$env:POSITION_EMA_RESET_GAP = "3"
-
-& .\.venv\Scripts\python.exe -m uvicorn main:app --app-dir gateway --host 0.0.0.0 --port 8000
-```
-
-Biến môi trường trong terminal được ưu tiên hơn `.env`. Sau mỗi lần đổi tham số, dừng gateway bằng Ctrl+C rồi chạy lại.
-
-- **Tắt lọc:** đổi `POSITION_FILTER_MODE` thành `off`. Vị trí và Zone dùng đúng WCL gốc; hai chấm trùng nhau.
-- **Thử bám chuyển động nhanh hơn:** đổi alpha thành `0.5`; giá trị hợp lệ là `0 < alpha <= 1`.
-- Mỗi session + thiết bị có trạng thái riêng. Lần đầu nhận nguyên vị trí WCL; epoch cũ/trùng không cập nhật EMA. Theo quy ước gap trong yêu cầu, khoảng cách epoch ID **lớn hơn 3** sẽ reset, ví dụ `100 → 104`. Đổi phòng hoặc khởi động lại gateway cũng reset.
-
-Kiểm tra `/health` có mục `position_filter`. `/api/v1/localization/latest` và WebSocket đều có `raw_x_m`, `raw_y_m`, `raw_zone_id`, `filtered_x_m`, `filtered_y_m`, `filtered_zone_id`, chế độ và alpha. Các trường `x_m/y_m/zone_id` là vị trí đang dùng để hiển thị.
-
-SQLite tự thêm các cột còn thiếu trong `localization_updates` khi gateway khởi động. Dữ liệu RSSI raw không bị thay đổi. Lịch sử trước EMA hiển thị Raw = Filtered và OFF, không tự lọc ngược dữ liệu cũ.
-
-Chạy kiểm tra cơ bản (chỉ dùng database tạm, không ghi database đo):
-
-```powershell
+~~~powershell
 & .\.venv\Scripts\python.exe -m compileall -q gateway
 & .\.venv\Scripts\python.exe scripts/check_position_filter.py
-```
+& .\.venv\Scripts\python.exe scripts/check_collection.py
+~~~
 
-Để đánh giá thực tế: đứng yên tại khoảng 5 điểm đã biết, mỗi điểm 60–120 giây; sau đó đi theo tuyến đánh dấu và dừng tại mốc. So sánh OFF, EMA 0.35 và EMA 0.5 về độ rung, độ trễ và sai số so với vị trí thật. MAD/Beacon-only chưa được thêm trong đợt này; median RSSI và quy tắc ghép đủ 4 node giữ nguyên.
+## 9. EMA — chỉ dành cho Realtime
+
+Đặt trong cùng terminal trước khi chạy gateway:
+
+~~~powershell
+$env:POSITION_FILTER_MODE = "ema"  # off để tắt
+$env:POSITION_EMA_ALPHA = "0.35"
+$env:POSITION_EMA_RESET_GAP = "3"
+~~~
+
+Khởi động lại gateway sau khi đổi tham số. EMA làm mượt tọa độ sau WCL, không sửa RSSI raw. Các tham số này không áp dụng cho Collection.

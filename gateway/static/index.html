@@ -44,6 +44,10 @@
   .swatch.blue { background:#38bdf8; }
   .swatch.green { background:#4ade80; }
   .swatch.red { background:#ef4444; }
+  [hidden] { display:none !important; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  td,th { padding:8px; border-bottom:1px solid #303a46; white-space:nowrap; text-align:left; }
   .map-node-label { font-weight:700; }
   @media(max-width:900px) { .layout { grid-template-columns:1fr; } .controls { grid-template-columns:1fr 1fr; } }
   @media(max-width:600px) { .controls { grid-template-columns:1fr; } .meta,.node-grid { grid-template-columns:1fr 1fr; } }
@@ -53,6 +57,7 @@
 <div class="wrap">
   <h1>RF Localization MVP</h1>
   <div class="sub">4-corner WCL zone test · live MQTT → FastAPI → WebSocket</div>
+  <div id="modeLabel" class="sub"></div>
 
   <div class="panel">
     <div class="controls">
@@ -65,8 +70,8 @@
     <button id="apply" style="margin-top:10px">Apply room + grid</button>
     <div id="configText" class="sub" style="margin:12px 0 0"></div>
     <div class="legend" style="margin-top:10px">
-      <span><i class="swatch orange"></i> Raw WCL</span>
-      <span><i class="swatch blue"></i> Filtered device</span>
+      <span class="realtime-only"><i class="swatch orange"></i> Raw WCL</span>
+      <span class="realtime-only"><i class="swatch blue"></i> Filtered device</span>
       <span><i class="swatch green"></i> ESP32 online</span>
       <span><i class="swatch red"></i> ESP32 offline</span>
     </div>
@@ -80,12 +85,25 @@
     <div id="nodeGrid" class="node-grid"></div>
   </div>
 
+  <div class="panel" id="collectionPanel" hidden>
+    <strong>Dataset Collection · fixed 30 seconds</strong>
+    <p>Click a cell and place the hotspot phone at its yellow centre. This is Ground Truth confirmed by you.</p>
+    <div id="groundTruth">Zone: — · True X: — · True Y: —</div>
+    <label style="margin-top:12px"><input id="confirmCenter" type="checkbox" style="width:auto"> I confirm the phone is at the selected cell centre.</label>
+    <button id="startMeasurement" disabled>Start Measurement (30s)</button>
+    <p id="measurementStatus">Ready · select a cell; all four ESP32 must be READY.</p>
+    <progress id="measurementProgress" value="0" max="30" style="width:100%"></progress>
+    <p id="measurementHistory" class="sub"></p>
+    <a id="exportVectors">Export Dataset CSV (8 columns)</a> ·
+    <a id="exportRaw">Export Raw Frames CSV (details)</a>
+  </div>
+
   <div class="layout">
     <div class="panel">
       <svg id="room" viewBox="0 0 1000 760" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
     <div>
-      <div class="panel meta">
+      <div class="panel meta realtime-only">
         <div class="stat"><small>Zone</small><strong id="zone">—</strong></div>
         <div class="stat"><small>X (m)</small><strong id="x">—</strong></div>
         <div class="stat"><small>Y (m)</small><strong id="y">—</strong></div>
@@ -100,11 +118,19 @@
         <div><strong>Gateway / WebSocket</strong></div>
         <div id="status" class="sub">Connecting…</div>
       </div>
-      <div class="panel">
+      <div class="panel realtime-only">
         <strong>RSSI vector</strong>
         <div id="vector" class="rssi" style="margin-top:10px;line-height:1.8">—</div>
       </div>
     </div>
+  </div>
+  <div class="panel" id="datasetTable" hidden style="overflow:auto">
+    <strong>RSSI vectors · 1-second median · Zone = selected Ground Truth</strong>
+    <table><thead><tr><th>session</th><th>timestamp</th><th>Zone</th><th>ESP01 - RSSI</th><th>ESP02 - RSSI</th><th>ESP03 - RSSI</th><th>ESP04 - RSSI</th><th>Vector RSSI</th></tr></thead><tbody id="vectorRows"></tbody></table>
+    <details id="rawDetails" style="margin-top:16px">
+      <summary>Original raw frames (details, unchanged RSSI)</summary>
+      <table><thead><tr><th>session</th><th>timestamp_ms</th><th>node_id</th><th>RSSI raw</th><th>Zone</th><th>True X</th><th>True Y</th></tr></thead><tbody id="rawRows"></tbody></table>
+    </details>
   </div>
 </div>
 <script>
@@ -113,83 +139,102 @@ let lastResult = null;
 let nodeStates = {};
 let ws = null;
 let reconnectTimer = null;
+let collectionMode = false, collectionState = null, selectedZone = null;
 const $ = id => document.getElementById(id);
 
-async function apiJson(url, options={}) {
-  const r = await fetch(url, options);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+async function apiJson(url, options = {}) {
+    const r = await fetch(url, options);
+    if (!r.ok)
+        throw new Error(await r.text());
+    return r.json();
 }
 
 async function loadRoom() {
-  try {
-    room = await apiJson('/api/v1/room');
-    $('width').value = room.width_m;
-    $('length').value = room.length_m;
-    $('cellWidth').value = room.grid_config.cell_width_m;
-    $('cellLength').value = room.grid_config.cell_length_m;
-    updateConfigText();
-    drawRoom();
-  } catch (err) {
-    $('configText').textContent = `Failed to load room: ${err.message}`;
-  }
+    try {
+        room = await apiJson('/api/v1/room');
+        $('width').value = room.width_m;
+        $('length').value = room.length_m;
+        $('cellWidth').value = room.grid_config.cell_width_m;
+        $('cellLength').value = room.grid_config.cell_length_m;
+        updateConfigText();
+        drawRoom();
+    } catch (err) {
+        $('configText').textContent = `Failed to load room: ${err.message}`;
+    }
 }
 
 function updateConfigText() {
-  if (!room) return;
-  $('configText').textContent =
-    `Grid: ${room.grid_config.columns} columns × ${room.grid_config.rows} rows · ` +
-    `requested cell size: ${room.grid_config.cell_width_m.toFixed(2)}m × ${room.grid_config.cell_length_m.toFixed(2)}m · ` +
-    `room: ${room.width_m.toFixed(2)}m × ${room.length_m.toFixed(2)}m`;
+    if (!room)
+        return;
+    $('configText').textContent =
+        `Grid: ${room.grid_config.columns} columns × ${room.grid_config.rows} rows · ` +
+        `requested cell size: ${room.grid_config.cell_width_m.toFixed(2)}m × ${
+            room.grid_config.cell_length_m.toFixed(2)}m · ` +
+        `room: ${room.width_m.toFixed(2)}m × ${room.length_m.toFixed(2)}m`;
 }
 
 async function applyRoom() {
-  const width_m = Number($('width').value);
-  const length_m = Number($('length').value);
-  const grid_cell_width_m = Number($('cellWidth').value);
-  const grid_cell_length_m = Number($('cellLength').value);
+    const width_m = Number($('width').value);
+    const length_m = Number($('length').value);
+    const grid_cell_width_m = Number($('cellWidth').value);
+    const grid_cell_length_m = Number($('cellLength').value);
 
-  if (!(width_m > 0) || !(length_m > 0) || !(grid_cell_width_m > 0) || !(grid_cell_length_m > 0)) {
-    alert('Room dimensions and grid cell dimensions must be greater than 0.');
-    return;
-  }
+    if (!(width_m > 0) || !(length_m > 0) || !(grid_cell_width_m > 0) ||
+        !(grid_cell_length_m > 0)) {
+        alert('Room dimensions and grid cell dimensions must be greater than 0.');
+        return;
+    }
 
-  try {
-    room = await apiJson('/api/v1/room', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({width_m, length_m, grid_cell_width_m, grid_cell_length_m})
-    });
-    $('width').value = room.width_m;
-    $('length').value = room.length_m;
-    $('cellWidth').value = room.grid_config.cell_width_m;
-    $('cellLength').value = room.grid_config.cell_length_m;
-    updateConfigText();
-    drawRoom();
-  } catch (err) {
-    alert(`Failed to update room: ${err.message}`);
-  }
+    try {
+        room = await apiJson('/api/v1/room', {
+            method : 'POST',
+            headers : {'Content-Type' : 'application/json'},
+            body : JSON.stringify({width_m, length_m, grid_cell_width_m, grid_cell_length_m})
+        });
+        $('width').value = room.width_m;
+        $('length').value = room.length_m;
+        $('cellWidth').value = room.grid_config.cell_width_m;
+        $('cellLength').value = room.grid_config.cell_length_m;
+        updateConfigText();
+        if (collectionMode) {
+            selectedZone = null;
+            $('confirmCenter').checked = false;
+            $('groundTruth').textContent = 'Zone: — · True X: — · True Y: —';
+        }
+        drawRoom();
+    } catch (err) {
+        alert(`Failed to update room: ${err.message}`);
+    }
 }
 
 function nodeStatusColor(id) {
-  const state = nodeStates[id];
-  if (!state) return '#94a3b8';
-  return state.online ? '#4ade80' : '#ef4444';
+    const state = nodeStates[id];
+    if (!state)
+        return '#94a3b8';
+    return state.online ? '#4ade80' : '#ef4444';
 }
 
 function renderNodeCards() {
-  const ids = ['ESP01','ESP02','ESP03','ESP04'];
-  const onlineCount = ids.filter(id => nodeStates[id]?.online).length;
-  $('nodeSummary').textContent = `${onlineCount}/${ids.length} online`;
+    const ids = [ 'ESP01', 'ESP02', 'ESP03', 'ESP04' ];
+    const onlineCount = ids.filter(id => nodeStates[id]?.online).length;
+    $('nodeSummary').textContent = `${onlineCount}/${ids.length} online`;
 
-  $('nodeGrid').innerHTML = ids.map(id => {
-    const n = nodeStates[id];
-    const stateClass = !n ? 'unknown' : (n.online ? 'online' : 'offline');
-    const stateText = !n ? 'UNKNOWN' : (n.online ? 'ONLINE' : 'OFFLINE');
-    const age = n?.seconds_since_seen == null ? 'never seen' : `${n.seconds_since_seen.toFixed(1)}s ago`;
-    const session = n?.session_id || '—';
-    const msg = n?.last_message_type || '—';
-    return `
+    $('nodeGrid').innerHTML =
+        ids.map(id => {
+               const n = nodeStates[id];
+               const stateClass = !n ? 'unknown' : (n.online ? 'online' : 'offline');
+               const stateText =
+                   !n ? 'UNKNOWN'
+                      : (collectionMode ? (n.ready ? 'READY'
+                                                   : (n.online ? 'ONLINE / NOT READY' : 'OFFLINE'))
+                                        : (n.online ? 'ONLINE' : 'OFFLINE'));
+               const age = n?.seconds_since_seen == null
+                               ? 'never seen'
+                               : `${n.seconds_since_seen.toFixed(1)}s ago`;
+               const session = n?.session_id || '—';
+               const msg = collectionMode ? `NTP=${n?.clock_synced ?? false}`
+                                          : (n?.last_message_type || '—');
+               return `
       <div class="node-card ${stateClass}">
         <div class="node-head">
           <span class="node-name">${id}</span>
@@ -197,123 +242,301 @@ function renderNodeCards() {
         </div>
         <div class="node-meta">Last message: ${age}<br>Type: ${msg}<br>Session: ${session}</div>
       </div>`;
-  }).join('');
+           })
+            .join('');
 }
 
 async function refreshNodes() {
-  try {
-    const nodes = await apiJson('/api/v1/nodes');
-    nodeStates = {};
-    for (const n of nodes) nodeStates[n.node_id] = n;
-    renderNodeCards();
-    drawRoom();
-  } catch (err) {
-    $('nodeSummary').textContent = 'Node status unavailable';
-  }
+    try {
+        const nodes = await apiJson(
+            '/api/v1/nodes' +
+            (collectionMode ? '?session_id=' + encodeURIComponent($('session').value.trim()) : ''));
+        nodeStates = {};
+        for (const n of nodes)
+            nodeStates[n.node_id] = n;
+        renderNodeCards();
+        drawRoom();
+    } catch (err) {
+        $('nodeSummary').textContent = 'Node status unavailable';
+    }
 }
 
 function drawRoom() {
-  const svg = $('room');
-  if (!room) return;
-  const W=1000, H=760, pad=95;
-  const scale=Math.min((W-2*pad)/room.width_m, (H-2*pad)/room.length_m);
-  const rw=room.width_m*scale, rh=room.length_m*scale;
-  const ox=(W-rw)/2, oy=(H-rh)/2;
-  let out='';
-  out += `<rect x="${ox}" y="${oy}" width="${rw}" height="${rh}" rx="8" fill="#12171d" stroke="#95a1af" stroke-width="3"/>`;
+    const svg = $('room');
+    if (!room)
+        return;
+    const W = 1000, H = 760, pad = 95;
+    const scale = Math.min((W - 2 * pad) / room.width_m, (H - 2 * pad) / room.length_m);
+    const rw = room.width_m * scale, rh = room.length_m * scale;
+    const ox = (W - rw) / 2, oy = (H - rh) / 2;
+    let out = '';
+    out += `<rect x="${ox}" y="${oy}" width="${rw}" height="${
+        rh}" rx="8" fill="#12171d" stroke="#95a1af" stroke-width="3"/>`;
 
-  for (const z of room.grid.zones) {
-    const x=ox+z.x0_m*scale, y=oy+z.y0_m*scale, w=z.width_m*scale, h=z.length_m*scale;
-    out += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#151b22" stroke="#303a46"/>`;
-    out += `<text x="${x+w/2}" y="${y+h/2}" fill="#768394" text-anchor="middle" dominant-baseline="middle" font-size="22">${z.zone_id}</text>`;
-  }
+    for (const z of room.grid.zones) {
+        const x = ox + z.x0_m * scale, y = oy + z.y0_m * scale, w = z.width_m * scale,
+              h = z.length_m * scale;
+        if (collectionMode) {
+            const measured = collectionState?.measurements?.some(
+                m => m.zone === z.zone_id && [ 'Completed', 'Partial' ].includes(m.status) &&
+                     m.room.width_m === room.width_m && m.room.length_m === room.length_m &&
+                     m.room.cell_width_m === room.grid_config.cell_width_m &&
+                     m.room.cell_length_m === room.grid_config.cell_length_m);
+            const fill = selectedZone?.zone_id === z.zone_id ? '#244d75'
+                                                             : (measured ? '#234536' : '#151b22');
+            out += `<rect data-zone="${z.zone_id}" x="${x}" y="${y}" width="${w}" height="${
+                h}" fill="${fill}" stroke="#303a46" style="cursor:pointer"/>`;
+            out += `<text x="${x + w / 2}" y="${
+                y +
+                h / 2}" fill="#9ba6b5" text-anchor="middle" dominant-baseline="middle" font-size="22" style="pointer-events:none">${
+                z.zone_id}</text>`;
+        } else {
+            out += `<rect x="${x}" y="${y}" width="${w}" height="${
+                h}" fill="#151b22" stroke="#303a46"/>`;
+            out += `<text x="${x + w / 2}" y="${
+                y +
+                h / 2}" fill="#768394" text-anchor="middle" dominant-baseline="middle" font-size="22">${
+                z.zone_id}</text>`;
+        }
+    }
 
-  for (const [id,n] of Object.entries(room.nodes)) {
-    const x=ox+n.x_m*scale, y=oy+n.y_m*scale;
-    const dx=id==='ESP01'||id==='ESP03'?-16:16;
-    const anchor=id==='ESP01'||id==='ESP03'?'end':'start';
-    const dy=id==='ESP01'||id==='ESP02'?-14:28;
-    const color=nodeStatusColor(id);
-    out += `<circle cx="${x}" cy="${y}" r="14" fill="none" stroke="${color}" stroke-width="3" opacity=".45"/>`;
-    out += `<circle cx="${x}" cy="${y}" r="8" fill="${color}"/>`;
-    out += `<text x="${x+dx}" y="${y+dy}" fill="#d9e0e9" text-anchor="${anchor}" font-size="17" class="map-node-label">${id}</text>`;
-  }
+    for (const [id, n] of Object.entries(room.nodes)) {
+        const x = ox + n.x_m * scale, y = oy + n.y_m * scale;
+        const dx = id === 'ESP01' || id === 'ESP03' ? -16 : 16;
+        const anchor = id === 'ESP01' || id === 'ESP03' ? 'end' : 'start';
+        const dy = id === 'ESP01' || id === 'ESP02' ? -14 : 28;
+        const color = nodeStatusColor(id);
+        out += `<circle cx="${x}" cy="${y}" r="14" fill="none" stroke="${
+            color}" stroke-width="3" opacity=".45"/>`;
+        out += `<circle cx="${x}" cy="${y}" r="8" fill="${color}"/>`;
+        out += `<text x="${x + dx}" y="${y + dy}" fill="#d9e0e9" text-anchor="${
+            anchor}" font-size="17" class="map-node-label">${id}</text>`;
+    }
 
-  out += `<text x="${W/2}" y="${oy+rh+52}" fill="#8995a5" text-anchor="middle" font-size="16">width ${room.width_m.toFixed(2)} m</text>`;
-  out += `<text x="${ox-46}" y="${oy+rh/2}" fill="#8995a5" text-anchor="middle" font-size="16" transform="rotate(-90 ${ox-46} ${oy+rh/2})">length ${room.length_m.toFixed(2)} m</text>`;
+    out += `<text x="${W / 2}" y="${
+        oy + rh + 52}" fill="#8995a5" text-anchor="middle" font-size="16">width ${
+        room.width_m.toFixed(2)} m</text>`;
+    out += `<text x="${ox - 46}" y="${
+        oy + rh / 2}" fill="#8995a5" text-anchor="middle" font-size="16" transform="rotate(-90 ${
+        ox - 46} ${oy + rh / 2})">length ${room.length_m.toFixed(2)} m</text>`;
 
-  if (lastResult) {
-    // Older history falls back to the original coordinates, without inventing EMA results.
-    const rx=ox+(lastResult.raw_x_m ?? lastResult.x_m)*scale;
-    const ry=oy+(lastResult.raw_y_m ?? lastResult.y_m)*scale;
-    const tx=ox+(lastResult.filtered_x_m ?? lastResult.x_m)*scale;
-    const ty=oy+(lastResult.filtered_y_m ?? lastResult.y_m)*scale;
-    out += `<circle cx="${rx}" cy="${ry}" r="11" fill="#fb923c" opacity=".85"/>`;
-    out += `<circle cx="${tx}" cy="${ty}" r="18" fill="none" stroke="#38bdf8" stroke-width="3" opacity=".55"/>`;
-    out += `<circle cx="${tx}" cy="${ty}" r="7" fill="#38bdf8" class="dot"/>`;
-    out += `<text x="${tx+13}" y="${ty-15}" fill="#38bdf8" font-weight="700" font-size="18">DEVICE</text>`;
-  }
+    if (collectionMode) {
+        out += `<text x="${ox}" y="${
+            oy - 45}" fill="#8995a5" font-size="15">Origin (0,0) · X → · Y ↓ · metres</text>`;
+        if (selectedZone) {
+            const cx = ox + (selectedZone.x0_m + selectedZone.width_m / 2) * scale;
+            const cy = oy + (selectedZone.y0_m + selectedZone.length_m / 2) * scale;
+            out += `<circle cx="${cx}" cy="${cy}" r="8" fill="#facc15"/><text x="${cx + 12}" y="${
+                cy - 12}" fill="#facc15">GROUND TRUTH</text>`;
+        }
+    }
+    if (lastResult && !collectionMode) {
+        // Older history falls back to the original coordinates, without inventing EMA results.
+        const rx = ox + (lastResult.raw_x_m ?? lastResult.x_m) * scale;
+        const ry = oy + (lastResult.raw_y_m ?? lastResult.y_m) * scale;
+        const tx = ox + (lastResult.filtered_x_m ?? lastResult.x_m) * scale;
+        const ty = oy + (lastResult.filtered_y_m ?? lastResult.y_m) * scale;
+        out += `<circle cx="${rx}" cy="${ry}" r="11" fill="#fb923c" opacity=".85"/>`;
+        out += `<circle cx="${tx}" cy="${
+            ty}" r="18" fill="none" stroke="#38bdf8" stroke-width="3" opacity=".55"/>`;
+        out += `<circle cx="${tx}" cy="${ty}" r="7" fill="#38bdf8" class="dot"/>`;
+        out += `<text x="${tx + 13}" y="${
+            ty - 15}" fill="#38bdf8" font-weight="700" font-size="18">DEVICE</text>`;
+    }
 
-  svg.innerHTML=out;
+    svg.innerHTML = out;
 }
 
 function renderResult(r) {
-  lastResult=r;
-  drawRoom();
-  $('zone').textContent=r.zone_id || '—';
-  $('x').textContent=Number(r.x_m).toFixed(2);
-  $('y').textContent=Number(r.y_m).toFixed(2);
-  $('rawXY').textContent=`${Number(r.raw_x_m ?? r.x_m).toFixed(2)} / ${Number(r.raw_y_m ?? r.y_m).toFixed(2)}`;
-  $('filteredXY').textContent=`${Number(r.filtered_x_m ?? r.x_m).toFixed(2)} / ${Number(r.filtered_y_m ?? r.y_m).toFixed(2)}`;
-  $('positionFilter').textContent=r.position_filter_mode==='ema' ? `EMA alpha=${r.position_ema_alpha}` : 'OFF';
-  $('nodes').textContent=r.nodes_used;
-  $('confidence').textContent=(Number(r.confidence)*100).toFixed(0)+'%';
-  $('epoch').textContent=r.epoch_id;
-  $('vector').innerHTML=Object.entries(r.rssi_vector_dbm || {})
-    .map(([k,v])=>`${k}: ${Number(v).toFixed(2)} dBm · n=${r.node_packet_count?.[k] ?? '?'} · drops=${r.queue_drop_count?.[k] ?? '?'}`)
-    .join('<br>') || '—';
+    lastResult = r;
+    drawRoom();
+    $('zone').textContent = r.zone_id || '—';
+    $('x').textContent = Number(r.x_m).toFixed(2);
+    $('y').textContent = Number(r.y_m).toFixed(2);
+    $('rawXY').textContent =
+        `${Number(r.raw_x_m ?? r.x_m).toFixed(2)} / ${Number(r.raw_y_m ?? r.y_m).toFixed(2)}`;
+    $('filteredXY').textContent = `${Number(r.filtered_x_m ?? r.x_m).toFixed(2)} / ${
+        Number(r.filtered_y_m ?? r.y_m).toFixed(2)}`;
+    $('positionFilter').textContent =
+        r.position_filter_mode === 'ema' ? `EMA alpha=${r.position_ema_alpha}` : 'OFF';
+    $('nodes').textContent = r.nodes_used;
+    $('confidence').textContent = (Number(r.confidence) * 100).toFixed(0) + '%';
+    $('epoch').textContent = r.epoch_id;
+    $('vector').innerHTML =
+        Object.entries(r.rssi_vector_dbm || {})
+            .map(([ k, v ]) => `${k}: ${Number(v).toFixed(2)} dBm · n=${
+                     r.node_packet_count?.[k] ?? '?'} · drops=${r.queue_drop_count?.[k] ?? '?'}`)
+            .join('<br>') ||
+        '—';
 }
 
 function connect() {
-  if (ws) ws.close();
-  if (reconnectTimer) clearTimeout(reconnectTimer);
-  const session=encodeURIComponent($('session').value.trim());
-  const proto=location.protocol==='https:'?'wss':'ws';
-  ws=new WebSocket(`${proto}://${location.host}/ws/v1/sessions/${session}`);
-  ws.onopen=()=>{
-    $('status').textContent='WebSocket connected';
-    $('status').className='ok';
-  };
-  ws.onclose=()=>{
-    $('status').textContent='WebSocket disconnected; retrying…';
-    $('status').className='warn';
-    reconnectTimer=setTimeout(connect,1500);
-  };
-  ws.onerror=()=>{
-    $('status').textContent='WebSocket error';
-    $('status').className='warn';
-  };
-  ws.onmessage=e=>{
-    try {
-      const r=JSON.parse(e.data);
-      if(r.message_type==='EPOCH_QUALITY') {
-        $('status').textContent=`Epoch ${r.epoch_id}: ${r.status} · overlap ${r.overlap_ms} ms`;
-        $('status').className=r.status==='complete'?'ok':'warn';
-        return;
-      }
-      renderResult(r);
-    } catch(_) {}
-  };
+    if (ws)
+        ws.close();
+    if (reconnectTimer)
+        clearTimeout(reconnectTimer);
+    const session = encodeURIComponent($('session').value.trim());
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws/v1/sessions/${session}`);
+    ws.onopen = () => {
+        $('status').textContent = 'WebSocket connected';
+        $('status').className = 'ok';
+    };
+    ws.onclose = () => {
+        $('status').textContent = 'WebSocket disconnected; retrying…';
+        $('status').className = 'warn';
+        reconnectTimer = setTimeout(connect, 1500);
+    };
+    ws.onerror = () => {
+        $('status').textContent = 'WebSocket error';
+        $('status').className = 'warn';
+    };
+    ws.onmessage = e => {
+        try {
+            const r = JSON.parse(e.data);
+            if (r.message_type === 'EPOCH_QUALITY') {
+                $('status').textContent =
+                    `Epoch ${r.epoch_id}: ${r.status} · overlap ${r.overlap_ms} ms`;
+                $('status').className = r.status === 'complete' ? 'ok' : 'warn';
+                return;
+            }
+            renderResult(r);
+        } catch (_) {
+        }
+    };
 }
 
-$('apply').onclick=applyRoom;
-$('session').onchange=connect;
+$('apply').onclick = applyRoom;
+$('session').onchange = connect;
+
+function activeMeasurement() {
+    return collectionState?.active_measurement ||
+           collectionState?.measurements?.find(m => !['Completed', 'Partial'].includes(m.status));
+}
+
+async function refreshCollection() {
+    try {
+        const query = 'session_id=' + encodeURIComponent($('session').value.trim());
+        collectionState = await apiJson('/api/v1/collection?' + query);
+        const active = activeMeasurement(), latest = collectionState.measurements[0];
+        if (active)
+            $('session').value = active.session;
+        $('session').disabled = !!active;
+        $('apply').disabled = !!active;
+        const ready = collectionState.nodes.filter(n => n.ready).length;
+        $('modeLabel').textContent = `Dataset Collection · ${ready}/4 READY`;
+        $('status').textContent = 'Collection connected · raw samples update every second';
+        $('status').className = 'ok';
+        $('startMeasurement').disabled =
+            !!active || !selectedZone || !$('confirmCenter').checked || ready !== 4;
+        const m = active || latest, time = collectionState.server_now_ms;
+        if (m) {
+            const phase = time < m.end_ms
+                              ? `Measuring · ${Math.ceil((m.end_ms - time) / 1000)}s left`
+                              : m.status;
+            const counts = Object.entries(m.sample_counts)
+                               .map(([ node, count ]) => `${node}: ${count}`)
+                               .join(' · ');
+            $('measurementStatus').textContent =
+                `${phase} · ${m.zone} · run${String(m.run_number).padStart(2, '0')} · samples ${
+                    counts}${m.interrupted ? ' · node/drop interruption' : ''}`;
+            $('measurementProgress').value = Math.max(0, Math.min(30, (time - m.start_ms) / 1000));
+        } else {
+            $('measurementStatus').textContent = 'Ready · select a cell and confirm its centre.';
+            $('measurementProgress').value = 0;
+        }
+        $('measurementHistory').textContent =
+            collectionState.measurements.slice(0, 8)
+                .map(m => `${m.zone}/run${m.run_number}: ${m.status}`)
+                .join(' · ');
+        $('exportRaw').href = '/api/v1/dataset/export/raw?' + query;
+        $('exportVectors').href = '/api/v1/dataset/export/vectors?' + query;
+        const filter = latest ? '&measurement_id=' + encodeURIComponent(latest.measurement_id) : '';
+        const vectors = await apiJson('/api/v1/vectors?' + query + filter);
+        $('vectorRows').innerHTML =
+            vectors.sort((a, b) => a.timestamp - b.timestamp)
+                .map(row => `<tr><td>${row.session}</td><td>${row.timestamp}</td><td>${
+                         row.zone ?? 'NULL'}</td>${
+                         row.vector.map(value => `<td>${value ?? 'NULL'}</td>`).join('')}<td>${
+                         JSON.stringify(row.vector)}</td></tr>`)
+                .join('');
+        const rows =
+            $('rawDetails').open ? await apiJson('/api/v1/collection/raw?' + query + filter) : [];
+        $('rawRows').innerHTML =
+            rows.slice(0, 30)
+                .map(sample => `<tr><td>${sample.session}</td><td>${sample.timestamp_ms}</td><td>${
+                         sample.node_id}</td><td>${sample.rssi_dbm}</td><td>${
+                         sample.zone ?? 'NULL'}</td><td>${
+                         sample.true_x_m == null ? 'NULL'
+                                                 : Number(sample.true_x_m).toFixed(2)}</td><td>${
+                         sample.true_y_m == null ? 'NULL'
+                                                 : Number(sample.true_y_m).toFixed(2)}</td></tr>`)
+                .join('');
+        drawRoom();
+    } catch (err) {
+        $('modeLabel').textContent = 'Collection status unavailable: ' + err.message;
+        $('startMeasurement').disabled = true;
+    }
+}
+
+$('confirmCenter').onchange = refreshCollection;
+$('rawDetails').ontoggle = () => {
+    if (collectionMode && $('rawDetails').open)
+        refreshCollection();
+};
+$('room').onclick = e => {
+    const rect = e.target.closest('[data-zone]');
+    if (!collectionMode || !rect || activeMeasurement())
+        return;
+    selectedZone = room.grid.zones.find(z => z.zone_id === rect.dataset.zone);
+    $('confirmCenter').checked = false;
+    $('groundTruth').textContent = `${selectedZone.zone_id} · True X=${
+        (selectedZone.x0_m + selectedZone.width_m / 2).toFixed(2)}m · True Y=${
+        (selectedZone.y0_m + selectedZone.length_m / 2).toFixed(2)}m`;
+    refreshCollection();
+};
+$('startMeasurement').onclick = async () => {
+    $('startMeasurement').disabled = true;
+    try {
+        const measurement = await apiJson('/api/v1/measurements', {
+            method : 'POST',
+            headers : {'Content-Type' : 'application/json'},
+            body : JSON.stringify({
+                session_id : $('session').value.trim(),
+                zone : selectedZone.zone_id,
+                confirm_center : $('confirmCenter').checked
+            })
+        });
+        $('measurementStatus').textContent = `Measuring · ${measurement.zone} · 30s`;
+        $('confirmCenter').checked = false;
+        await refreshCollection();
+    } catch (err) {
+        alert(err.message);
+        await refreshCollection();
+    }
+};
 
 (async function init() {
-  await loadRoom();
-  await refreshNodes();
-  connect();
-  setInterval(refreshNodes, 1000);
+    const mode = await apiJson('/api/v1/mode');
+    collectionMode = mode.collection_mode;
+    $('modeLabel').textContent = collectionMode ? 'Dataset Collection' : 'Real-time Localization';
+    $('collectionPanel').hidden = !collectionMode;
+    $('datasetTable').hidden = !collectionMode;
+    document.querySelectorAll('.realtime-only').forEach(el => el.hidden = collectionMode);
+    await loadRoom();
+    await refreshNodes();
+    if (collectionMode) {
+        $('session').onchange = () => {
+            selectedZone = null;
+            $('confirmCenter').checked = false;
+            refreshNodes();
+            refreshCollection();
+        };
+        await refreshCollection();
+        setInterval(refreshCollection, 1000);
+    } else
+        connect();
+    setInterval(refreshNodes, 1000);
 })();
 </script>
 </body>

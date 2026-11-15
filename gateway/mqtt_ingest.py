@@ -37,6 +37,7 @@ class MqttGateway:
         self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
         self.connected = False
+        self.collection_handler = None  # Optional branch; None preserves the original realtime path.
 
     def start(self) -> None:
         logger.info("Connecting MQTT to %s:%d", self.settings.mqtt_host, self.settings.mqtt_port)
@@ -79,6 +80,9 @@ class MqttGateway:
                 if topic_parts != ["rf", "v1", "nodes", report.node_id, "observation"]:
                     raise ValueError("topic node_id does not match payload node_id")
                 self.on_node_seen(report.node_id, report.session_id, "EPOCH_OBSERVATION")
+                if self.collection_handler is not None and isinstance(report, RawEpochObservation):
+                    self.collection_handler(report)
+                    return
                 self.reconstructor.add(report)
             elif message_type == "NODE_READY":
                 ready = NodeReady.model_validate(payload)

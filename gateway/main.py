@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 
 from config import DEFAULT_SETTINGS, EXPECTED_NODE_IDS, Settings, build_settings
@@ -19,6 +20,8 @@ from localization import WCLLocalizationEngine
 from models import LocalizationResult, NodeReady, ObservationItem, RoomConfigRequest
 from mqtt_ingest import MqttGateway
 from position_filter import PositionEMA
+from collection import DatasetCollection
+from models import MeasurementRequest
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("rf-gateway")
@@ -107,6 +110,10 @@ class GatewayRuntime:
             self.on_node_ready,
             self.on_node_seen,
         )
+        self.collection = None
+        if COLLECTION_MODE:
+            self.collection = DatasetCollection(self)
+            self.mqtt.collection_handler = self.collection.on_raw
         self.node_last_seen_ms: dict[str, int | None] = {node_id: None for node_id in EXPECTED_NODE_IDS}
         self.node_session: dict[str, str | None] = {node_id: None for node_id in EXPECTED_NODE_IDS}
         self.node_message_type: dict[str, str | None] = {node_id: None for node_id in EXPECTED_NODE_IDS}
@@ -290,12 +297,15 @@ class GatewayRuntime:
                 {"message_type": "EPOCH_QUALITY", **quality}), self.ws_manager.loop)
 
 
-runtime = GatewayRuntime()
-
-
 async def expiry_loop() -> None:
     while True:
-        runtime.reconstructor.flush_expired()
+        if COLLECTION_MODE:
+            try:
+                runtime.collection.tick()
+            except sqlite3.Error:
+                logger.exception("Collection processing failed; persisted windows will be retried")
+        else:
+            runtime.reconstructor.flush_expired()
         await asyncio.sleep(0.1)
 
 
@@ -325,6 +335,7 @@ async def health() -> dict[str, Any]:
     grid = runtime.settings.grid
     return {
         "status": "ok",
+        "collection_mode": COLLECTION_MODE,
         "database_path": runtime.database.path,
         "vector_mode": "strict_4",
         "min_overlap_ms": runtime.settings.min_overlap_ms,
@@ -352,7 +363,9 @@ async def health() -> dict[str, Any]:
 
 
 @app.get("/api/v1/nodes")
-async def get_nodes() -> list[dict[str, Any]]:
+async def get_nodes(session_id: str = "session-dev-001") -> list[dict[str, Any]]:
+    if COLLECTION_MODE:
+        return runtime.collection.nodes(session_id)
     return runtime.node_status()
 
 
@@ -399,6 +412,11 @@ async def get_room() -> dict[str, Any]:
 
 @app.post("/api/v1/room")
 async def update_room(request: RoomConfigRequest) -> dict[str, Any]:
+    if COLLECTION_MODE:
+        try:
+            runtime.collection.ensure_idle()
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
     runtime.set_room(
         request.width_m,
         request.length_m,
@@ -430,6 +448,68 @@ async def localization_websocket(websocket: WebSocket, session_id: str) -> None:
         await runtime.ws_manager.remove(websocket)
     except Exception:
         await runtime.ws_manager.remove(websocket)
+
+
+@app.get("/api/v1/mode")
+async def get_mode():
+    return {"collection_mode": COLLECTION_MODE, "mode": "collection" if COLLECTION_MODE else "realtime"}
+
+
+def require_collection():
+    if not COLLECTION_MODE:
+        raise HTTPException(409, "Set COLLECTION_MODE = True at the bottom of gateway/main.py and restart gateway")
+
+
+@app.get("/api/v1/collection")
+async def collection_state(session_id: str):
+    require_collection()
+    return runtime.collection.state(session_id)
+
+
+@app.post("/api/v1/measurements")
+async def start_measurement(request: MeasurementRequest):
+    require_collection()
+    try:
+        return runtime.collection.start(request.session_id, request.zone, request.confirm_center)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.get("/api/v1/collection/raw")
+async def collection_raw(session_id: str, measurement_id: str | None = None, limit: int = 50):
+    require_collection()
+    return runtime.database.latest_samples(session_id, min(max(limit, 1), 200), measurement_id)
+
+
+@app.get("/api/v1/vectors")
+async def collection_vectors(session_id: str, measurement_id: str | None = None, limit: int = 50):
+    require_collection()
+    return runtime.database.latest_vectors(session_id, min(max(limit, 1), 200), measurement_id)
+
+
+@app.get("/api/v1/dataset/export/vectors")
+def export_vectors(session_id: str, measurement_id: str | None = None):
+    require_collection()
+    return StreamingResponse(
+        runtime.database.export_collection_vectors(session_id, measurement_id),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="dataset-vectors.csv"'},
+    )
+
+
+@app.get("/api/v1/dataset/export/raw")
+def export_dataset(session_id: str, measurement_id: str | None = None):
+    require_collection()
+    return StreamingResponse(
+        runtime.database.export_collection_raw(session_id, measurement_id),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="dataset-raw.csv"'},
+    )
+
+
+# Change only this flag, then restart gateway. False keeps the original realtime pipeline.
+COLLECTION_MODE = True
+runtime = GatewayRuntime()
 
 
 if __name__ == "__main__":

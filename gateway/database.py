@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+import csv
+import hashlib
+import io
 import sqlite3
+import statistics
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 from config import resolve_database_path
+from config import EXPECTED_NODE_IDS
 
 
 class Database:
@@ -120,6 +125,376 @@ class Database:
     def close(self) -> None:
         with self.lock:
             self.conn.close()
+
+    def init_collection_schema(self):
+        """Add derived vectors beside original frames; migrate by adding work, never deleting raw."""
+        with self.lock, self.conn:
+            self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS measurements (
+                    measurement_id TEXT PRIMARY KEY, session TEXT NOT NULL, zone TEXT NOT NULL,
+                    run_number INTEGER NOT NULL, true_x_m REAL NOT NULL, true_y_m REAL NOT NULL,
+                    start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL,
+                    duration_s INTEGER NOT NULL DEFAULT 30 CHECK(duration_s=30),
+                    status TEXT NOT NULL, interrupted INTEGER NOT NULL DEFAULT 0,
+                    room_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_measurement_time
+                    ON measurements(session,start_ms,end_ms);
+                CREATE TABLE IF NOT EXISTS received_messages (
+                    session TEXT NOT NULL, node_id TEXT NOT NULL, message_id TEXT NOT NULL,
+                    payload_hash TEXT NOT NULL, received_ms INTEGER NOT NULL,
+                    PRIMARY KEY(session,node_id,message_id)
+                );
+                CREATE TABLE IF NOT EXISTS raw_rssi_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL,
+                    measurement_id TEXT REFERENCES measurements(measurement_id),
+                    timestamp_ms INTEGER NOT NULL, node_id TEXT NOT NULL,
+                    rssi_dbm INTEGER NOT NULL, message_id TEXT NOT NULL,
+                    sample_index INTEGER NOT NULL, channel INTEGER,
+                    frame_type TEXT, frame_subtype INTEGER, gateway_received_ms INTEGER NOT NULL,
+                    UNIQUE(session,node_id,message_id,sample_index)
+                );
+                CREATE INDEX IF NOT EXISTS idx_samples_time
+                    ON raw_rssi_samples(session,timestamp_ms);
+                CREATE INDEX IF NOT EXISTS idx_samples_measurement
+                    ON raw_rssi_samples(measurement_id,timestamp_ms);
+                CREATE TABLE IF NOT EXISTS changed_measurements (
+                    measurement_id TEXT PRIMARY KEY
+                );
+                CREATE TABLE IF NOT EXISTS rssi_vectors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL, zone TEXT,
+                    esp01_rssi REAL, esp02_rssi REAL, esp03_rssi REAL, esp04_rssi REAL,
+                    vector_json TEXT NOT NULL, measurement_id TEXT,
+                    sample_counts_json TEXT NOT NULL, quality_status TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_vector_key
+                    ON rssi_vectors(session,COALESCE(measurement_id,''),timestamp);
+                CREATE INDEX IF NOT EXISTS idx_vector_measurement
+                    ON rssi_vectors(measurement_id,timestamp);
+                CREATE TABLE IF NOT EXISTS vector_jobs (
+                    session TEXT NOT NULL, timestamp INTEGER NOT NULL,
+                    PRIMARY KEY(session,timestamp)
+                );
+                CREATE TABLE IF NOT EXISTS collection_migrations (name TEXT PRIMARY KEY);
+            """)
+            migrated = self.conn.execute(
+                "SELECT 1 FROM collection_migrations WHERE name='vectors_from_raw_v1'"
+            ).fetchone()
+            if not migrated:
+                # Recover vectors for previously collected frames, including empty measured seconds.
+                self.conn.execute("""
+                    INSERT OR IGNORE INTO vector_jobs
+                    SELECT DISTINCT session,(timestamp_ms/1000)*1000 FROM raw_rssi_samples
+                """)
+                for measurement in self.conn.execute("SELECT * FROM measurements").fetchall():
+                    self._prepare_measurement_vectors(dict(measurement))
+                self.conn.execute(
+                    "INSERT INTO collection_migrations VALUES('vectors_from_raw_v1')"
+                )
+
+    def store_collection_samples(self, report, received_ms):
+        """Persist every original frame and its capture-time label in one transaction."""
+        payload_hash = hashlib.sha256(report.model_dump_json().encode()).hexdigest()
+        key = (report.session_id, report.node_id, report.message_id)
+        with self.lock, self.conn:
+            old = self.conn.execute(
+                "SELECT payload_hash FROM received_messages "
+                "WHERE session=? AND node_id=? AND message_id=?",
+                key,
+            ).fetchone()
+            if old:
+                if old[0] != payload_hash:
+                    raise ValueError("message_id reused with different payload")
+                return False
+
+            self.conn.execute(
+                "INSERT INTO received_messages VALUES(?,?,?,?,?)",
+                (*key, payload_hash, received_ms),
+            )
+            for index, sample in enumerate(report.samples):
+                measurement = self.conn.execute(
+                    "SELECT measurement_id FROM measurements "
+                    "WHERE session=? AND start_ms<=? AND end_ms>?",
+                    (report.session_id, sample.timestamp_ms, sample.timestamp_ms),
+                ).fetchone()
+                measurement_id = measurement[0] if measurement else None
+                self.conn.execute("""
+                    INSERT INTO raw_rssi_samples(
+                        session,measurement_id,timestamp_ms,node_id,rssi_dbm,message_id,
+                        sample_index,channel,frame_type,frame_subtype,gateway_received_ms
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    report.session_id, measurement_id, sample.timestamp_ms, report.node_id,
+                    sample.rssi_dbm, report.message_id, index, sample.channel,
+                    sample.frame_type, sample.frame_subtype, received_ms,
+                ))
+                if measurement_id:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO changed_measurements VALUES(?)",
+                        (measurement_id,),
+                    )
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO vector_jobs VALUES(?,?)",
+                ((report.session_id, start) for start in {
+                    sample.timestamp_ms // 1000 * 1000 for sample in report.samples
+                }),
+            )
+        return True
+
+    def create_measurement(self, measurement):
+        item = measurement
+        with self.lock, self.conn:
+            run = self.conn.execute(
+                "SELECT COALESCE(MAX(run_number),0)+1 FROM measurements "
+                "WHERE session=? AND zone=?",
+                (item["session"], item["zone"]),
+            ).fetchone()[0]
+            self.conn.execute("""
+                INSERT INTO measurements(
+                    measurement_id,session,zone,run_number,true_x_m,true_y_m,
+                    start_ms,end_ms,status,room_json,created_at_ms
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                item["measurement_id"], item["session"], item["zone"], run,
+                item["true_x_m"], item["true_y_m"], item["start_ms"], item["end_ms"],
+                "Measuring", json.dumps(item["room"]), item["created_at_ms"],
+            ))
+            self._prepare_measurement_vectors(item)
+
+    def _prepare_measurement_vectors(self, measurement):
+        # Start remains immediate: a non-aligned 30 s run may overlap 31 Unix windows.
+        for start in range(measurement["start_ms"] // 1000 * 1000, measurement["end_ms"], 1000):
+            self.conn.execute("INSERT OR IGNORE INTO vector_jobs VALUES(?,?)", (
+                measurement["session"], start,
+            ))
+            self._write_vector(
+                measurement["session"], start, measurement["measurement_id"],
+                measurement["zone"], [None] * 4, {node: 0 for node in EXPECTED_NODE_IDS},
+                insert_only=True,
+            )
+
+    def _write_vector(self, session, start, measurement_id, zone, values, counts, insert_only=False):
+        # These derived rows never overwrite raw_rssi_samples.
+        conflict = "DO NOTHING" if insert_only else """DO UPDATE SET
+            zone=excluded.zone,esp01_rssi=excluded.esp01_rssi,esp02_rssi=excluded.esp02_rssi,
+            esp03_rssi=excluded.esp03_rssi,esp04_rssi=excluded.esp04_rssi,
+            vector_json=excluded.vector_json,sample_counts_json=excluded.sample_counts_json,
+            quality_status=excluded.quality_status"""
+        self.conn.execute("""
+            INSERT INTO rssi_vectors(
+                session,timestamp,zone,esp01_rssi,esp02_rssi,esp03_rssi,esp04_rssi,
+                vector_json,measurement_id,sample_counts_json,quality_status
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT """ + conflict, (
+            session, start, zone, *values, json.dumps(values, separators=(",", ":")),
+            measurement_id, json.dumps(counts),
+            "complete" if all(counts.values()) else "partial",
+        ))
+
+    def rebuild_collection_vectors(self, timestamp, wait_ms=400):
+        """Capture-time windows, fixed node order, and independent Ground Truth for each run."""
+        with self.lock, self.conn:
+            jobs = self.conn.execute(
+                "SELECT session,timestamp FROM vector_jobs "
+                "WHERE timestamp+1000+?<=? ORDER BY timestamp LIMIT 200",
+                (wait_ms, timestamp),
+            ).fetchall()
+            for job in jobs:
+                session, start = job
+                rows = self.conn.execute("""
+                    SELECT node_id,rssi_dbm,measurement_id FROM raw_rssi_samples
+                    WHERE session=? AND timestamp_ms>=? AND timestamp_ms<?
+                """, (session, start, start + 1000)).fetchall()
+                measurements = self.conn.execute("""
+                    SELECT measurement_id,zone FROM measurements
+                    WHERE session=? AND start_ms<? AND end_ms>?
+                """, (session, start + 1000, start)).fetchall()
+                groups = [(None, None, rows)] if rows else []
+                groups.extend(
+                    (measurement[0], measurement[1], [row for row in rows
+                     if row["measurement_id"] == measurement[0]])
+                    for measurement in measurements
+                )
+                for measurement_id, zone, samples in groups:
+                    by_node = {node: [] for node in EXPECTED_NODE_IDS}
+                    for sample in samples:
+                        by_node[sample["node_id"]].append(sample["rssi_dbm"])
+                    values = [statistics.median(by_node[node]) if by_node[node] else None
+                              for node in EXPECTED_NODE_IDS]
+                    values = [int(value) if value is not None and value == int(value) else value
+                              for value in values]
+                    counts = {node: len(by_node[node]) for node in EXPECTED_NODE_IDS}
+                    self._write_vector(session, start, measurement_id, zone, values, counts)
+                self.conn.execute(
+                    "DELETE FROM vector_jobs WHERE session=? AND timestamp=?", (session, start)
+                )
+        return len(jobs)
+
+    def latest_vectors(self, session, limit=50, measurement_id=None):
+        suffix = " AND measurement_id=?" if measurement_id else ""
+        args = (session, measurement_id, limit) if measurement_id else (session, limit)
+        with self.lock:
+            rows = self.conn.execute("""
+                SELECT * FROM rssi_vectors WHERE session=? AND measurement_id IS NOT NULL
+            """ + suffix + " ORDER BY timestamp DESC,id DESC LIMIT ?", args).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["vector"] = json.loads(item.pop("vector_json"))
+            item["sample_counts"] = json.loads(item.pop("sample_counts_json"))
+            result.append(item)
+        return result
+
+    def export_collection_vectors(self, session, measurement_id=None):
+        """The main dataset CSV has exactly the eight requested columns."""
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow([
+            "session", "timestamp", "Zone", "ESP01 - RSSI", "ESP02 - RSSI",
+            "ESP03 - RSSI", "ESP04 - RSSI", "Vector RSSI",
+        ])
+        yield buffer.getvalue()
+        suffix = " AND measurement_id=?" if measurement_id else ""
+        after = 0
+        with self.lock:
+            upper = self.conn.execute(
+                "SELECT COALESCE(MAX(id),0) FROM rssi_vectors"
+            ).fetchone()[0]
+        while after < upper:
+            args = (session, after, upper, measurement_id) if measurement_id else (
+                session, after, upper
+            )
+            with self.lock:
+                rows = self.conn.execute("""
+                    SELECT id,session,timestamp,zone,esp01_rssi,esp02_rssi,
+                           esp03_rssi,esp04_rssi,vector_json
+                    FROM rssi_vectors WHERE session=? AND id>? AND id<=?
+                    AND measurement_id IS NOT NULL
+                """ + suffix + " ORDER BY id LIMIT 500", args).fetchall()
+            if not rows:
+                break
+            buffer.seek(0)
+            buffer.truncate()
+            for row in rows:
+                writer.writerow(
+                    "NULL" if value is None else (
+                        int(value) if isinstance(value, float) and value.is_integer() else value
+                    )
+                    for value in tuple(row)[1:]
+                )
+            yield buffer.getvalue()
+            after = rows[-1]["id"]
+
+    def measurements(self, session=None, active_only=False, limit=100, measurement_ids=None):
+        clauses, args = [], []
+        if session is not None:
+            clauses.append("session=?")
+            args.append(session)
+        if active_only:
+            clauses.append("status NOT IN ('Completed','Partial')")
+        if measurement_ids:
+            clauses.append("measurement_id IN (" + ",".join("?" for _ in measurement_ids) + ")")
+            args.extend(measurement_ids)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM measurements" + where + " ORDER BY start_ms DESC LIMIT ?",
+                (*args, limit),
+            ).fetchall()
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["room"] = json.loads(item.pop("room_json"))
+                counts = {node: 0 for node in EXPECTED_NODE_IDS}
+                coverage = {}
+                # Counts indicate missing data only; RSSI values are never aggregated or changed.
+                buckets = self.conn.execute("""
+                    SELECT node_id, (timestamp_ms-?)/1000 AS second_index, COUNT(*) AS total
+                    FROM raw_rssi_samples WHERE measurement_id=?
+                    GROUP BY node_id,second_index
+                """, (item["start_ms"], item["measurement_id"])).fetchall()
+                for bucket in buckets:
+                    counts[bucket["node_id"]] += bucket["total"]
+                    coverage.setdefault(bucket["second_index"], set()).add(bucket["node_id"])
+                item["sample_counts"] = counts
+                item["complete_seconds"] = sum(
+                    nodes == set(EXPECTED_NODE_IDS) for nodes in coverage.values()
+                )
+                result.append(item)
+        return result
+
+    def update_measurement(self, measurement_id, status, interrupted):
+        with self.lock, self.conn:
+            self.conn.execute(
+                "UPDATE measurements SET status=?,interrupted=? WHERE measurement_id=?",
+                (status, int(interrupted), measurement_id),
+            )
+
+    def changed_measurements(self):
+        with self.lock:
+            return [
+                row[0] for row in self.conn.execute(
+                    "SELECT measurement_id FROM changed_measurements"
+                )
+            ]
+
+    def clear_changed_measurements(self, ids):
+        with self.lock, self.conn:
+            self.conn.executemany(
+                "DELETE FROM changed_measurements WHERE measurement_id=?",
+                ((measurement_id,) for measurement_id in ids),
+            )
+
+    def latest_samples(self, session, limit=50, measurement_id=None):
+        suffix = " AND s.measurement_id=?" if measurement_id else ""
+        args = (session, measurement_id, limit) if measurement_id else (session, limit)
+        with self.lock:
+            rows = self.conn.execute("""
+                SELECT s.*, m.zone, m.true_x_m, m.true_y_m, m.run_number
+                FROM raw_rssi_samples s
+                LEFT JOIN measurements m ON s.measurement_id=m.measurement_id
+                WHERE s.session=?
+            """ + suffix + " ORDER BY s.timestamp_ms DESC,s.id DESC LIMIT ?", args).fetchall()
+        return [dict(row) for row in rows]
+
+    def export_collection_raw(self, session, measurement_id=None):
+        """Export exact raw values plus their Ground Truth, in bounded pages."""
+        headers = [
+            "id", "session", "measurement_id", "timestamp_ms", "node_id", "rssi_dbm",
+            "message_id", "sample_index", "channel", "frame_type", "frame_subtype",
+            "gateway_received_ms", "zone", "true_x_m", "true_y_m", "run_number", "room_metadata",
+        ]
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
+        yield buffer.getvalue()
+        after = 0
+        with self.lock:
+            upper = self.conn.execute(
+                "SELECT COALESCE(MAX(id),0) FROM raw_rssi_samples"
+            ).fetchone()[0]
+        while after < upper:
+            suffix = " AND s.measurement_id=?" if measurement_id else ""
+            args = (session, after, upper, measurement_id) if measurement_id else (
+                session, after, upper
+            )
+            with self.lock:
+                rows = self.conn.execute("""
+                    SELECT s.*, m.zone, m.true_x_m, m.true_y_m, m.run_number, m.room_json
+                    FROM raw_rssi_samples s
+                    LEFT JOIN measurements m ON s.measurement_id=m.measurement_id
+                    WHERE s.session=? AND s.id>? AND s.id<=?
+                """ + suffix + " ORDER BY s.id LIMIT 500", args).fetchall()
+            if not rows:
+                break
+            buffer.seek(0)
+            buffer.truncate()
+            for row in rows:
+                writer.writerow(tuple(row))
+            yield buffer.getvalue()
+            after = rows[-1]["id"]
+
 
     def store_raw_chunk(self, report) -> None:
         with self.lock, self.conn:
