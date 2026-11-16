@@ -9,6 +9,18 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class AIPosition(StrictModel):
+    session_id: StrictStr = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    track_id: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["OK", "WARMING_UP", "INSUFFICIENT_RSSI"]
+    timestamp_ms: StrictInt = Field(ge=0)
+    x_m: float | None = Field(default=None, allow_inf_nan=False, ge=0)
+    y_m: float | None = Field(default=None, allow_inf_nan=False, ge=0)
+    zone: StrictStr | None = Field(default=None, pattern=r"^Z[1-9][0-9]*$")
+    collected: StrictInt | None = Field(default=None, ge=0)
+    needed: StrictInt | None = Field(default=None, ge=1)
+
+
 class NodeReady(StrictModel):
     schema_version: StrictStr = Field(pattern=r"^1\.0$")
     message_type: Literal["NODE_READY"]

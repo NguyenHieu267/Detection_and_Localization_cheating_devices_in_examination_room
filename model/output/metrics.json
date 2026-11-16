@@ -1,0 +1,150 @@
+{
+  "dataset_path": "dataset-vectors.csv",
+  "rows": 6975,
+  "windows": 675,
+  "zones": 182,
+  "sessions": [
+    "session-dev-001"
+  ],
+  "rejected_windows": 0,
+  "evaluation_type": "held-out Zone (NOT an independent new-session test)",
+  "caution": "With one session, Zone holdout only estimates interpolation to unseen cells and does NOT measure future-session accuracy. With multiple sessions, the evaluation holds out an entire independent session. The exported deployment model is subsequently retrained on all data.",
+  "window_size": 10,
+  "best_by_zone_holdout_MDE": "MLP",
+  "scores_by_model": {
+    "kNN": [
+      {
+        "n": 141,
+        "MDE_m": 1.0306,
+        "median_error_m": 0.8186,
+        "p90_error_m": 2.0692,
+        "within_0_3m_pct": 15.6,
+        "within_0_6m_pct": 33.33,
+        "within_1_0m_pct": 58.16,
+        "exact_cell_pct": 3.55
+      },
+      {
+        "n": 141,
+        "MDE_m": 1.0867,
+        "median_error_m": 0.8639,
+        "p90_error_m": 2.1791,
+        "within_0_3m_pct": 15.6,
+        "within_0_6m_pct": 30.5,
+        "within_1_0m_pct": 56.74,
+        "exact_cell_pct": 7.8
+      },
+      {
+        "n": 129,
+        "MDE_m": 1.1408,
+        "median_error_m": 0.9822,
+        "p90_error_m": 2.2474,
+        "within_0_3m_pct": 4.65,
+        "within_0_6m_pct": 20.93,
+        "within_1_0m_pct": 51.16,
+        "exact_cell_pct": 0.78
+      }
+    ],
+    "ExtraTrees": [
+      {
+        "n": 141,
+        "MDE_m": 0.9229,
+        "median_error_m": 0.7331,
+        "p90_error_m": 1.7256,
+        "within_0_3m_pct": 16.31,
+        "within_0_6m_pct": 39.01,
+        "within_1_0m_pct": 59.57,
+        "exact_cell_pct": 7.8
+      },
+      {
+        "n": 141,
+        "MDE_m": 1.0105,
+        "median_error_m": 0.8196,
+        "p90_error_m": 2.1242,
+        "within_0_3m_pct": 9.22,
+        "within_0_6m_pct": 35.46,
+        "within_1_0m_pct": 63.83,
+        "exact_cell_pct": 4.26
+      },
+      {
+        "n": 129,
+        "MDE_m": 1.0467,
+        "median_error_m": 0.9639,
+        "p90_error_m": 1.9619,
+        "within_0_3m_pct": 10.08,
+        "within_0_6m_pct": 28.68,
+        "within_1_0m_pct": 54.26,
+        "exact_cell_pct": 3.88
+      }
+    ],
+    "RandomForest": [
+      {
+        "n": 141,
+        "MDE_m": 0.9226,
+        "median_error_m": 0.7978,
+        "p90_error_m": 1.8918,
+        "within_0_3m_pct": 12.06,
+        "within_0_6m_pct": 40.43,
+        "within_1_0m_pct": 63.83,
+        "exact_cell_pct": 1.42
+      },
+      {
+        "n": 141,
+        "MDE_m": 1.0672,
+        "median_error_m": 0.8423,
+        "p90_error_m": 2.098,
+        "within_0_3m_pct": 10.64,
+        "within_0_6m_pct": 36.17,
+        "within_1_0m_pct": 59.57,
+        "exact_cell_pct": 2.13
+      },
+      {
+        "n": 129,
+        "MDE_m": 1.0669,
+        "median_error_m": 0.9692,
+        "p90_error_m": 1.9537,
+        "within_0_3m_pct": 10.85,
+        "within_0_6m_pct": 27.91,
+        "within_1_0m_pct": 52.71,
+        "exact_cell_pct": 5.43
+      }
+    ],
+    "MLP": [
+      {
+        "n": 141,
+        "MDE_m": 0.8317,
+        "median_error_m": 0.714,
+        "p90_error_m": 1.51,
+        "within_0_3m_pct": 12.77,
+        "within_0_6m_pct": 39.72,
+        "within_1_0m_pct": 69.5,
+        "exact_cell_pct": 2.84
+      },
+      {
+        "n": 141,
+        "MDE_m": 0.9835,
+        "median_error_m": 0.7955,
+        "p90_error_m": 1.9451,
+        "within_0_3m_pct": 16.31,
+        "within_0_6m_pct": 34.04,
+        "within_1_0m_pct": 61.7,
+        "exact_cell_pct": 4.96
+      },
+      {
+        "n": 129,
+        "MDE_m": 1.0234,
+        "median_error_m": 0.8756,
+        "p90_error_m": 1.8588,
+        "within_0_3m_pct": 7.75,
+        "within_0_6m_pct": 32.56,
+        "within_1_0m_pct": 54.26,
+        "exact_cell_pct": 3.1
+      }
+    ]
+  },
+  "average_MDE_m": {
+    "kNN": 1.086,
+    "ExtraTrees": 0.9934,
+    "RandomForest": 1.0189,
+    "MLP": 0.9462
+  }
+}

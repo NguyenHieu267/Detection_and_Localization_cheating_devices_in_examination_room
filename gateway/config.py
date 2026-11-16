@@ -16,7 +16,9 @@ def resolve_database_path(path: str | Path | None = None) -> str:
     database/rf_gateway.db; existing files are never moved or merged implicitly.
     Explicit absolute paths to other files and :memory: remain supported.
     """
-    value = str(path if path is not None else os.getenv("DATABASE_PATH", "")).strip()
+    mode = os.getenv("COLLECTION_MODE", "false").strip().lower() in {"true", "1", "yes"}
+    default_path = os.getenv("COLLECTION_DATABASE_PATH" if mode else "REALTIME_DATABASE_PATH", "")
+    value = str(path if path is not None else (os.getenv("DATABASE_PATH") or default_path)).strip()
     if value == ":memory:":
         return value
     requested = Path(value or "rf_gateway.db").expanduser()
@@ -38,13 +40,16 @@ def resolve_database_path(path: str | Path | None = None) -> str:
         raise ValueError("Relative DATABASE_PATH must stay inside the database directory")
     return str(candidate)
 
-try:
-    from dotenv import load_dotenv
-except ImportError:  # pragma: no cover
-    load_dotenv = None
+from dotenv import load_dotenv
 
-if load_dotenv is not None:
-    load_dotenv()
+load_dotenv(PROJECT_ROOT / ".env")
+
+
+COLLECTION_DURATION_S = int(os.getenv("COLLECTION_DURATION_S", "30"))
+COLLECTION_RECEIVE_WAIT_MS = int(os.getenv("COLLECTION_RECEIVE_WAIT_MS", "3000"))
+COLLECTION_VECTOR_WAIT_MS = int(os.getenv("COLLECTION_VECTOR_WAIT_MS", "400"))
+if COLLECTION_DURATION_S < 1 or COLLECTION_RECEIVE_WAIT_MS < 0 or COLLECTION_VECTOR_WAIT_MS < 0:
+    raise ValueError("Collection duration must be positive; wait times must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -65,7 +70,7 @@ class GridConfig:
 @dataclass(frozen=True)
 class Settings:
     # MQTT
-    mqtt_host: str = os.getenv("MQTT_HOST", "172.20.10.2")
+    mqtt_host: str = os.getenv("MQTT_HOST", "127.0.0.1")
     mqtt_port: int = int(os.getenv("MQTT_PORT", "1883"))
     mqtt_username: str = os.getenv("MQTT_USERNAME", "")
     mqtt_password: str = os.getenv("MQTT_PASSWORD", "")
@@ -199,12 +204,7 @@ def build_settings(
     )
 
 
-DEFAULT_SETTINGS = Settings(
-    room_width_m=float(os.getenv("ROOM_WIDTH_M", "8.0")),
-    room_length_m=float(os.getenv("ROOM_LENGTH_M", "12.0")),
-    grid_cell_width_m=float(os.getenv("GRID_CELL_WIDTH_M", "2.0")),
-    grid_cell_length_m=float(os.getenv("GRID_CELL_LENGTH_M", "4.0")),
-)
+DEFAULT_SETTINGS = Settings()
 
 
 def default_config_path() -> Path:

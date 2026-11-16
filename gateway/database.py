@@ -134,7 +134,7 @@ class Database:
                     measurement_id TEXT PRIMARY KEY, session TEXT NOT NULL, zone TEXT NOT NULL,
                     run_number INTEGER NOT NULL, true_x_m REAL NOT NULL, true_y_m REAL NOT NULL,
                     start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL,
-                    duration_s INTEGER NOT NULL DEFAULT 30 CHECK(duration_s=30),
+                    duration_s INTEGER NOT NULL DEFAULT 30 CHECK(duration_s>0),
                     status TEXT NOT NULL, interrupted INTEGER NOT NULL DEFAULT 0,
                     room_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL
                 );
@@ -192,6 +192,33 @@ class Database:
                 self.conn.execute(
                     "INSERT INTO collection_migrations VALUES('vectors_from_raw_v1')"
                 )
+
+        self._upgrade_measurement_duration()
+
+    def _upgrade_measurement_duration(self):
+        # Older databases restricted runs to 30 seconds. Preserve rows and foreign keys.
+        with self.lock:
+            sql = self.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='measurements'"
+            ).fetchone()[0]
+            if "CHECK(duration_s=30)" not in sql:
+                return
+            foreign_keys = self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+            try:
+                with self.conn:
+                    self.conn.execute("BEGIN")
+                    self.conn.execute(sql.replace("measurements", "measurements_new", 1)
+                                      .replace("CHECK(duration_s=30)", "CHECK(duration_s>0)"))
+                    self.conn.execute("INSERT INTO measurements_new SELECT * FROM measurements")
+                    self.conn.execute("DROP TABLE measurements")
+                    self.conn.execute("ALTER TABLE measurements_new RENAME TO measurements")
+                    self.conn.execute("CREATE INDEX idx_measurement_time "
+                                      "ON measurements(session,start_ms,end_ms)")
+                    if self.conn.execute("PRAGMA foreign_key_check").fetchone():
+                        raise sqlite3.IntegrityError("Measurement migration foreign key mismatch")
+            finally:
+                self.conn.execute(f"PRAGMA foreign_keys={foreign_keys}")
 
     def store_collection_samples(self, report, received_ms):
         """Persist every original frame and its capture-time label in one transaction."""
@@ -253,11 +280,12 @@ class Database:
             self.conn.execute("""
                 INSERT INTO measurements(
                     measurement_id,session,zone,run_number,true_x_m,true_y_m,
-                    start_ms,end_ms,status,room_json,created_at_ms
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    start_ms,end_ms,duration_s,status,room_json,created_at_ms
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 item["measurement_id"], item["session"], item["zone"], run,
                 item["true_x_m"], item["true_y_m"], item["start_ms"], item["end_ms"],
+                (item["end_ms"] - item["start_ms"]) // 1000,
                 "Measuring", json.dumps(item["room"]), item["created_at_ms"],
             ))
             self._prepare_measurement_vectors(item)

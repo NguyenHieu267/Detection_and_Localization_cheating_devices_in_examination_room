@@ -86,7 +86,7 @@
   </div>
 
   <div class="panel" id="collectionPanel" hidden>
-    <strong>Dataset Collection · fixed 30 seconds</strong>
+    <strong id="collectionTitle">Dataset Collection</strong>
     <p>Click a cell and place the hotspot phone at its yellow centre. This is Ground Truth confirmed by you.</p>
     <div id="groundTruth">Zone: — · True X: — · True Y: —</div>
     <label style="margin-top:12px"><input id="confirmCenter" type="checkbox" style="width:auto"> I confirm the phone is at the selected cell centre.</label>
@@ -103,6 +103,13 @@
       <svg id="room" viewBox="0 0 1000 760" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
     <div>
+      <div class="panel realtime-only">
+        <strong>AI Position · purple point</strong>
+        <div id="aiStatus" class="sub">Waiting for AI predictor</div>
+        <div>Zone: <strong id="aiZone">—</strong></div>
+        <div>X: <strong id="aiX">—</strong> m · Y: <strong id="aiY">—</strong> m</div>
+        <small>Purple: AI · Orange: WCL · Blue: WCL/EMA</small>
+      </div>
       <div class="panel meta realtime-only">
         <div class="stat"><small>Zone</small><strong id="zone">—</strong></div>
         <div class="stat"><small>X (m)</small><strong id="x">—</strong></div>
@@ -140,6 +147,7 @@ let nodeStates = {};
 let ws = null;
 let reconnectTimer = null;
 let collectionMode = false, collectionState = null, selectedZone = null;
+let aiResult = null, aiUpdated = 0;
 const $ = id => document.getElementById(id);
 
 async function apiJson(url, options = {}) {
@@ -344,8 +352,32 @@ function drawRoom() {
             ty - 15}" fill="#38bdf8" font-weight="700" font-size="18">DEVICE</text>`;
     }
 
+    if (aiResult && !collectionMode) {
+        const ax = ox + aiResult.x_m * scale, ay = oy + aiResult.y_m * scale;
+        out += `<circle cx="${ax}" cy="${ay}" r="12" fill="#c084fc" stroke="#faf5ff" stroke-width="2"/>`;
+        out += `<text x="${ax + 15}" y="${ay - 15}" fill="#c084fc" font-size="20" font-weight="700">AI</text>`;
+    }
     svg.innerHTML = out;
 }
+
+function renderAI(r) {
+    aiUpdated = Date.now();
+    aiResult = r.status === 'OK' ? r : null;
+    $('aiStatus').textContent = r.status === 'OK' ? 'AI live' :
+        (r.status === 'WARMING_UP' ? `Warming up: ${r.collected}/${r.needed}` : 'Insufficient RSSI');
+    $('aiZone').textContent = aiResult ? r.zone : '—';
+    $('aiX').textContent = aiResult ? Number(r.x_m).toFixed(2) : '—';
+    $('aiY').textContent = aiResult ? Number(r.y_m).toFixed(2) : '—';
+    drawRoom();
+}
+
+setInterval(() => {
+    if (aiUpdated && Date.now() - aiUpdated > 5000) {
+        renderAI({status: 'INSUFFICIENT_RSSI'});
+        aiUpdated = 0;
+        $('aiStatus').textContent = 'No fresh AI result · check predictor and RSSI';
+    }
+}, 1000);
 
 function renderResult(r) {
     lastResult = r;
@@ -371,6 +403,9 @@ function renderResult(r) {
 }
 
 function connect() {
+    renderAI({status: 'INSUFFICIENT_RSSI'});
+    aiUpdated = 0;
+    $('aiStatus').textContent = 'Waiting for AI predictor';
     if (ws)
         ws.close();
     if (reconnectTimer)
@@ -394,6 +429,10 @@ function connect() {
     ws.onmessage = e => {
         try {
             const r = JSON.parse(e.data);
+            if (r.message_type === 'AI_POSITION') {
+                renderAI(r);
+                return;
+            }
             if (r.message_type === 'EPOCH_QUALITY') {
                 $('status').textContent =
                     `Epoch ${r.epoch_id}: ${r.status} · overlap ${r.overlap_ms} ms`;
@@ -430,6 +469,10 @@ async function refreshCollection() {
         $('startMeasurement').disabled =
             !!active || !selectedZone || !$('confirmCenter').checked || ready !== 4;
         const m = active || latest, time = collectionState.server_now_ms;
+        const duration = active ? active.duration_s : collectionState.duration_s;
+        $('collectionTitle').textContent = `Dataset Collection · ${collectionState.duration_s} seconds`;
+        $('startMeasurement').textContent = `Start Measurement (${collectionState.duration_s}s)`;
+        $('measurementProgress').max = m ? m.duration_s : duration;
         if (m) {
             const phase = time < m.end_ms
                               ? `Measuring · ${Math.ceil((m.end_ms - time) / 1000)}s left`
@@ -440,7 +483,7 @@ async function refreshCollection() {
             $('measurementStatus').textContent =
                 `${phase} · ${m.zone} · run${String(m.run_number).padStart(2, '0')} · samples ${
                     counts}${m.interrupted ? ' · node/drop interruption' : ''}`;
-            $('measurementProgress').value = Math.max(0, Math.min(30, (time - m.start_ms) / 1000));
+            $('measurementProgress').value = Math.max(0, Math.min(m.duration_s, (time - m.start_ms) / 1000));
         } else {
             $('measurementStatus').textContent = 'Ready · select a cell and confirm its centre.';
             $('measurementProgress').value = 0;
@@ -507,7 +550,7 @@ $('startMeasurement').onclick = async () => {
                 confirm_center : $('confirmCenter').checked
             })
         });
-        $('measurementStatus').textContent = `Measuring · ${measurement.zone} · 30s`;
+        $('measurementStatus').textContent = `Measuring · ${measurement.zone} · ${measurement.duration_s}s`;
         $('confirmCenter').checked = false;
         await refreshCollection();
     } catch (err) {
@@ -518,6 +561,8 @@ $('startMeasurement').onclick = async () => {
 
 (async function init() {
     const mode = await apiJson('/api/v1/mode');
+    if (mode.session_id)
+        $('session').value = mode.session_id;
     collectionMode = mode.collection_mode;
     $('modeLabel').textContent = collectionMode ? 'Dataset Collection' : 'Real-time Localization';
     $('collectionPanel').hidden = !collectionMode;

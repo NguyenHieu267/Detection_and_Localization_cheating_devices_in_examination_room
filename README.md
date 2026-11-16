@@ -24,11 +24,11 @@ Không lấy Physical address của laptop làm MAC mục tiêu. BSSID có thể
 
 **IPv4 Wi-Fi → MQTT host** (lệnh script chạy: `ipconfig`):
 
-![Lấy IPv4 laptop tại Wireless LAN adapter Wi-Fi](assets/readme/mqtt-host.png)
+![Lấy IPv4 laptop tại Wireless LAN adapter Wi-Fi](assets/mqtt-host.png)
 
 **BSSID → Target MAC** (lệnh script chạy: `netsh wlan show interfaces`):
 
-![Lấy BSSID hotspot làm Target MAC](assets/readme/target-mac.png)
+![Lấy BSSID hotspot làm Target MAC](assets/target-mac.png)
 
 Các hình chụp ở thời điểm khác nhau: ảnh BSSID là `EE:80:A9:13:17:4D`, còn ảnh cấu hình bên dưới dùng MAC cũ. Điền BSSID hiện tại giống nhau trên cả 4 ESP32 và gateway, không chép cố định từ ảnh.
 
@@ -39,7 +39,7 @@ Cài Python, Mosquitto và extension PlatformIO trong VSCode. Mở terminal tạ
 ```powershell
 cd "C:\Users\Admin\Downloads\do an"
 py -m venv .venv
-& .\.venv\Scripts\python.exe -m pip install -r .\gateway\requirements.txt
+& .\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
 ```
 
 Nếu đã có venv hoạt động và đã cài thư viện thì bỏ qua. Không cần activate khi chạy bằng đường dẫn Python như trong hướng dẫn.
@@ -73,7 +73,7 @@ Stop-Service mosquitto
 | `wifi_password` | Mật khẩu hotspot; để trống khi sửa sẽ giữ mật khẩu đã lưu |
 | `mqtt_host` | IPv4 laptop, ví dụ `172.20.10.3` |
 | `mqtt_port` | Giữ `1883` |
-| `session_id` | Giữ `session-dev-001`, giống nhau trên cả 4 con |
+| `session_id` | Giống `SESSION_ID` trong `.env`, hiện `session-dev-002`, giống nhau trên cả 4 con |
 | `target_mac` | BSSID hotspot, ví dụ `26:67:F7:59:85:A1` |
 | `capture_mode` | Giữ `target_only` |
 | `epoch_ms` | Giữ `1000` |
@@ -85,157 +85,150 @@ Không chọn **Open Wi-Fi** nếu hotspot có mật khẩu. Không cần sửa 
 
 **Cấu hình cũ lưu trong NVS** — thay Wi-Fi, MQTT host và Target MAC theo mạng hiện tại:
 
-<img src="assets/readme/config-before.jpg" alt="Trang cấu hình ESP32 với thông tin đã lưu trong NVS" width="420">
+<img src="assets/config-before.jpg" alt="Trang cấu hình ESP32 với thông tin đã lưu trong NVS" width="420">
 
 **Sau khi điền và bấm Save and restart**, trang trả về `saved: true, restarting: true`:
 
-<img src="assets/readme/config-saved.jpg" alt="Cấu hình ESP32 và thông báo lưu thành công, khởi động lại" width="420">
+<img src="assets/config-saved.jpg" alt="Cấu hình ESP32 và thông báo lưu thành công, khởi động lại" width="420">
 
 **Sau khi ESP32 kết nối hotspot**, đọc IP của ESP tại dòng `[WIFI] STA IP=…` để mở lại web cấu hình. Đây là IP ESP32, không phải MQTT host:
 
-![Serial sau khi ESP32 kết nối hotspot](assets/readme/hotspot-connected.png)
+![Serial sau khi ESP32 kết nối hotspot](assets/hotspot-connected.png)
 
 Ảnh Serial có lỗi MQTT vì broker chưa sẵn sàng lúc chụp. Kết nối Wi-Fi thành công chưa có nghĩa MQTT đã kết nối; tiếp tục mục 4.
 
-## 4. Chạy hệ thống — giữ 2 terminal mở
+## 4. Cấu hình chung trong .env
 
-Mở thư mục gốc project trong VSCode. Đảm bảo laptop và cả 4 ESP32 đang dùng cùng hotspot.
+Chỉ sửa file `.env` ở thư mục gốc. `.env.example` là bản mẫu khi cài máy mới,
+không được chương trình đọc. Ba file .bat đọc .env và ưu tiên nó hơn biến cũ trong terminal.
 
-**Terminal 1 — Mosquitto:**
-
-```powershell
-cd "C:\Users\Admin\Downloads\do an"
-& "C:\Program Files\mosquitto\mosquitto.exe" -c ".\scripts\mosquitto.conf" -v
-```
-
-Giữ terminal chạy. Nếu báo cổng 1883 bị chiếm, dừng dịch vụ Mosquitto theo mục 2 và đóng broker chạy trùng rồi thử lại.
-
-**Terminal 2 — Gateway:** sửa IPv4 và BSSID theo mục 1 trước khi chạy.
-
-```powershell
-cd "C:\Users\Admin\Downloads\do an"
-
-$env:MQTT_HOST = "172.20.10.3"
-$env:MQTT_PORT = "1883"
-$env:TARGET_DEVICE_MAC = "CA:88:82:14:E5:79"
-$env:DATABASE_PATH = "database/house_collect.db"
-
-& .\.venv\Scripts\python.exe -m uvicorn main:app --app-dir gateway --host 0.0.0.0 --port 8000
-```
-
-Chờ log `MQTT connected; subscriptions installed`. Cấu hình gateway ở trên dùng cùng IPv4 laptop với các ESP32 cho cả Android và iPhone.
-
-## 5. Mở web và chọn chế độ
-
-Giữ hai terminal ở mục 4 chạy. Mở **http://127.0.0.1:8000**.
-
-Ở **cuối gateway/main.py**, trước dòng `runtime = GatewayRuntime()`, chọn:
-
-~~~python
-COLLECTION_MODE = False
-~~~
-
-| Cờ | Hoạt động |
+| Biến | Công dụng |
 |---|---|
-| `False` | Realtime cũ: RSSI → ghép epoch → WCL → EMA → vị trí trên web |
-| `True` | Collection: chọn ô, thu raw 30 giây và xuất bảng RSSI vector 8 cột kèm Ground Truth |
+| MQTT_HOST | IPv4 laptop mà ESP32 dùng làm broker |
+| MQTT_PORT | Cổng MQTT, hiện 1883 |
+| TARGET_DEVICE_MAC | MAC mục tiêu; dùng BSSID nếu định vị điện thoại hotspot |
+| SESSION_ID | Session AI và mặc định trên dashboard, hiện session-dev-002 |
+| COLLECTION_MODE | false: định vị + AI; true: thu dataset |
+| REALTIME_DATABASE_PATH | Database khi COLLECTION_MODE=false, mặc định database/ai_realtime.db |
+| COLLECTION_DATABASE_PATH | Database khi COLLECTION_MODE=true, mặc định database/house_collect.db |
+| COLLECTION_DURATION_S | Số giây mỗi lượt thu, mặc định 30 |
+| COLLECTION_RECEIVE_WAIT_MS | Chờ gói đến trễ sau lượt thu, mặc định 3000 ms; không kéo dài thời gian đo |
+| COLLECTION_VECTOR_WAIT_MS | Đợi thêm trước khi tổng hợp cửa sổ 1 giây, mặc định 400 ms |
+| ROOM_WIDTH_M / ROOM_LENGTH_M | Rộng 4.3 m, dài 4.2 m |
+| GRID_CELL_WIDTH_M / GRID_CELL_LENGTH_M | Kích thước ô, hiện 0.3 m |
+| AI_MODEL_PATH | model/output/model.joblib |
+| AI_DATASET_PATH / AI_WINDOW_SIZE | CSV train và số vector trong cửa sổ, hiện 10 |
+| GATEWAY_BIND_HOST / GATEWAY_PORT | Địa chỉ nghe và cổng web |
+| GATEWAY_URL | Địa chỉ AI kết nối gateway trên laptop |
+| MOSQUITTO_EXE | Đường dẫn mosquitto.exe |
 
-Sau khi sửa cờ: **Ctrl+C dừng gateway → chạy lại lệnh gateway ở mục 4 → tải lại web**. Nếu vẫn thấy giao diện cũ, kiểm tra cờ là `True` và bấm Ctrl+F5.
+DEVICE_TOKEN_SALT phải khớp firmware. Sau khi đổi .env, khởi động lại các chương trình
+liên quan. Đổi MQTT_PORT thì cập nhật cổng trên ESP32 và firewall.
+Đổi GATEWAY_PORT thì cập nhật cả GATEWAY_URL.
 
-**Không cần nạp lại firmware ESP32.** Wi-Fi, MQTT, Target MAC và lịch thu/gửi hiện tại giữ nguyên.
+Cấu hình trên ESP32 vẫn lưu riêng trong NVS: đổi session, target MAC, Wi-Fi hoặc MQTT
+thì cần chỉnh trên web của từng ESP32 nữa. .env không tự đẩy cấu hình xuống ESP.
+Thông số trong config.py là giá trị dự phòng; không cần sửa khi có .env.
+Chỉnh phòng trên dashboard áp dụng cho lần chạy hiện tại; muốn giữ sau restart thì sửa .env.
 
-Đặt 4 node ở các góc: ESP01 (0,0), ESP02 (rộng,0), ESP03 (0,dài), ESP04 (rộng,dài). Nhập đúng kích thước phòng và ô lưới, bấm Apply. Session trên web phải giống cả 4 ESP32.
+## 5. Chạy hệ thống
 
-Ở Realtime, chờ đủ 4 node online và Nodes Used = 4. Chấm cam là WCL gốc, chấm xanh là vị trí sau EMA.
+Mở 3 terminal tại thư mục dự án; hoặc nhấp đúp từng file .bat.
 
-## 6. Collection — bấm là đo
-
-1. Đặt `COLLECTION_MODE = True` và chạy lại gateway.
-2. Chờ **4/4 READY**: các node có MQTT mới, đúng session và NTP hợp lệ.
-3. Click chọn ô. Đặt điện thoại đúng **chấm vàng ở tâm ô**, kiểm tra Zone / True X / True Y.
-4. Đánh dấu xác nhận, bấm **Start Measurement (30s)**. Gateway bắt đầu ngay khi nhận lệnh; không đếm ngược trước khi đo.
-5. Giữ điện thoại yên trong 30 giây. Đợi `Measuring → Receiving → Completed/Partial`.
-6. Chọn ô khác hoặc đo lại ô cũ. Mỗi lượt có ID và số run riêng, không ghi đè.
-7. Bấm **Export Dataset CSV (8 columns)** để tải bảng chính đúng định dạng yêu cầu. **Export Raw Frames CSV (details)** là file chi tiết từng frame, dùng để đối chiếu.
-
-**Hai bảng riêng:** mỗi frame vẫn giữ nguyên RSSI, timestamp thu và node trong bảng raw. Bảng `rssi_vectors` lấy median của mỗi node trong cửa sổ Unix 1 giây để tạo một dòng 4 node. Nhận -51, -53, -70 thì raw vẫn có đủ ba giá trị; ô vector đại diện là -53. Không chạy EMA/WCL trong Collection và không ghi đè raw bằng median.
-
-**Bảng chính trên web và CSV có đúng 8 cột:**
-
-`session | timestamp | Zone | ESP01 - RSSI | ESP02 - RSSI | ESP03 - RSSI | ESP04 - RSSI | Vector RSSI`
-
-- `timestamp`: Unix ms đầu cửa sổ 1 giây, không phải thời gian MQTT tới.
-- Thứ tự vector luôn ESP01, ESP02, ESP03, ESP04. Thiếu node: SQLite/CSV `NULL`, JSON `null`; không điền giá trị giả.
-- `Zone`: ô Ground Truth đã chọn, không phải zone dự đoán. Mỗi lượt có ID riêng trong DB, kể cả đo lại cùng ô.
-- Start vẫn bắt đầu ngay; lượt 30 giây không tròn giây có thể chạm 31 cửa sổ Unix. Mẫu ngoài khoảng đo không được đưa vào vector có Ground Truth của lượt đó.
-
-**Receiving trong 3 giây cuối:** chỉ đợi gói đã thu đi tới gateway, không đo thêm. Mẫu thu ngoài 30 giây không được gắn vào lượt đó. Chờ Receiving xong rồi chuyển ô.
-
-**Gán theo giờ thu:** ví dụ lượt A từ 10:00:00 đến 10:00:30; mẫu thu lúc 10:00:29 nhưng tới lúc 10:00:31 vẫn thuộc lượt A, không thuộc ô của lượt B. Mẫu tới sau Receiving vẫn được lưu đúng lượt cũ.
-
-**Một SQLite duy nhất:** `database/rf_gateway.db`.
-
-- `measurements`: ID lượt, session, zone, tâm ô True X/Y, thời gian, trạng thái và cấu hình phòng/node.
-- `raw_rssi_samples`: từng frame với RSSI, timestamp thu, node, loại frame, thời gian gateway nhận và ID lượt.
-- `rssi_vectors`: các dòng median/NULL theo cửa sổ Unix, khóa theo session + lượt đo + timestamp; giữ riêng với raw.
-- Dữ liệu lịch sử được giữ nguyên. Sau khi cập nhật code và chạy lại gateway, vector của những lượt đã thu được tự dựng từ raw có sẵn, không cần đo lại.
-
-CSV dataset chính chỉ xuất các lượt đã đăng ký đo, nên không lẫn những frame trước Start có Zone trống. CSV raw chi tiết vẫn có thể chứa mẫu ngoài lượt đo với ID lượt/Ground Truth trống; thêm True X/Y, run và metadata phòng. Dataset không ghi MAC/device token; vẫn chọn mục tiêu theo Target MAC/salt cũ.
-
-`Completed`: có mẫu của cả 4 node trong mỗi giây của lượt đo, không ghi nhận gián đoạn/rớt mẫu. Chỉ đếm để kiểm tra chất lượng, không sửa RSSI; không bảo đảm nhận mọi frame vô tuyến. Thiếu dữ liệu thì báo `Partial` và vẫn giữ mẫu đã nhận.
-
-## 7. Nếu chưa nhận dữ liệu
-
-- `/health` cần có `mqtt_connected: true`. Khi Collection, xem 4/4 READY trên web.
-- ESP32 dùng IPv4 laptop làm MQTT host; gateway phải vào cùng broker.
-- Kiểm tra session, Target MAC/BSSID hiện tại, salt và `clock_synced: true`.
-- Terminal kiểm tra bên dưới dùng IP ví dụ; thay nếu IPv4 laptop khác:
+Terminal 1:
 
 ~~~powershell
-& "C:\Program Files\mosquitto\mosquitto_sub.exe" -h 172.20.10.3 -p 1883 -t "rf/#" -v
+.\scripts\run_mosquitto.bat
 ~~~
 
-Có observation nhưng web chưa nhận: xem log gateway có `MQTT message rejected` hoặc lỗi SQLite không. Không có bản tin: kiểm tra Mosquitto, firewall và MQTT host trên ESP32.
-
-Có thể tắt terminal `mosquitto_sub`; phải giữ Mosquitto và gateway chạy khi đo. Firmware cũ dùng QoS0 và Queue hữu hạn, vẫn có thể mất mẫu khi mạng lỗi, RAM đầy hoặc mất điện.
-
-## 8. Các file scripts
-
-| File | Công dụng | Khi đo có cần chạy? |
-|---|---|---|
-| `start_mqtt.bat` | Mở Mosquitto bằng `scripts/mosquitto.conf` | Có thể thay lệnh terminal 1 |
-| `start_gateway.bat` | Mở gateway bằng Python trong `.venv` của project | Có thể thay lệnh terminal 2 |
-| `check_collection.py` | Kiểm tra Start ngay, raw không đổi, đo lại, mẫu trễ, chống trùng và DB | Không; chỉ kiểm tra code |
-| `check_position_filter.py` | Kiểm tra WCL/EMA, OFF, reset và DB cũ | Không; chỉ kiểm tra code |
-
-Hai file kiểm tra có logic kiểm thử riêng, dùng DB tạm; gateway không gọi chúng khi đo. Hai file .bat có công dụng nên được giữ lại. Đặt biến MQTT/Target theo mục 4 trong PowerShell trước khi gọi script gateway; script kế thừa các biến đó.
+Terminal 2:
 
 ~~~powershell
-# Terminal 1:
-.\scripts\start_mqtt.bat
-
-# Terminal 2, sau khi đặt biến môi trường ở mục 4:
-.\scripts\start_gateway.bat
+.\scripts\run_gateway.bat
 ~~~
 
-Không chạy cả lệnh dài lẫn .bat cho cùng chương trình để tránh trùng broker/gateway.
-
-Lệnh kiểm tra code — không bắt buộc cho mỗi buổi đo:
+Terminal 3, chỉ dùng khi COLLECTION_MODE=false và muốn chạy AI:
 
 ~~~powershell
-& .\.venv\Scripts\python.exe -m compileall -q gateway
-& .\.venv\Scripts\python.exe scripts/check_position_filter.py
-& .\.venv\Scripts\python.exe scripts/check_collection.py
+.\scripts\run_ai.bat
 ~~~
 
-## 9. EMA — chỉ dành cho Realtime
+Mở http://127.0.0.1:8000 (hoặc cổng GATEWAY_PORT), nhấn Ctrl+F5.
+Nếu broker/gateway cũ đang chạy thì Ctrl+C dừng trước, không mở bản thứ hai trùng cổng.
+Giữ Mosquitto, gateway và AI chạy khi đo AI. Không cần kích hoạt venv khi dùng .bat.
 
-Đặt trong cùng terminal trước khi chạy gateway:
+scripts/launch.py đọc .env rồi gọi đúng chương trình, không phải file test.
+Giữ file này để ba .bat không cần chép lại cách đọc .env và tìm đường dẫn.
+Các kiểm tra session, NTP, chống trùng và chống lượt đo chồng nhau bảo vệ dữ liệu,
+không bỏ chỉ để code ngắn hơn. Cấu hình phòng lặp trong code và kiểm tra tồn tại
+model/broker lặp ở launcher đã được rút gọn; lỗi thiếu file do chương trình báo trực tiếp.
+scripts/mosquitto.conf là mẫu cấu hình broker: mở listener cho ESP kết nối,
+cho phép client không dùng tài khoản và dùng IPv4. Launcher thay ${MQTT_PORT}
+bằng cổng trong .env rồi tạo config tạm cho Mosquitto. Chạy broker qua .bat,
+không truyền trực tiếp file mẫu này cho mosquitto.exe.
+Android và iPhone đều chỉ cần một broker; gateway và AI là hai chương trình khác.
+
+## 6. Thu dataset
+
+Trong .env đặt COLLECTION_MODE=true; chương trình tự chọn COLLECTION_DATABASE_PATH.
+Chạy Mosquitto và gateway, chọn đúng session giống 4 node.
+Cần 4 node READY: online, cùng session, NTP đúng và có báo cáo mới.
+
+1. Nhập phòng và kích thước ô, bấm Apply room + grid.
+2. Chọn ô, đặt điện thoại tại tâm vàng và xác nhận.
+3. Bấm Start Measurement: đo ngay trong COLLECTION_DURATION_S giây, mặc định 30, không đếm ngược.
+4. Receiving chờ theo COLLECTION_RECEIVE_WAIT_MS, mặc định 3 giây, chỉ nhận gói đến muộn.
+5. Completed là đủ dữ liệu và không ghi nhận gián đoạn; Partial vẫn giữ mẫu đã nhận.
+6. Export Dataset CSV là bảng vector 8 cột; Export Raw Frames CSV là dữ liệu gốc chi tiết.
+
+RSSI gốc giữ nguyên. Bảng rssi_vectors riêng lấy median mỗi cửa sổ 1 giây,
+thiếu node ghi NULL, vector giữ thứ tự ESP01..ESP04.
+Zone và tọa độ thật do người đo chọn, không phải vị trí WCL.
+measurement_id phân biệt từng lượt; run_number tăng riêng theo Session + Zone.
+30 giây bắt đầu giữa giây có thể giao với 31 cửa sổ Unix.
+
+Tắt Chrome/MQTT/gateway không xóa dữ liệu đã lưu. Chạy lại đúng đường dẫn database và
+Session ID để xem/xuất dữ liệu cũ. Không lưu lại CSV qua Excel nếu nó làm tròn timestamp.
+
+## 7. Train và đo AI
+
+Giữ một thư mục model: model/output/, chứa model mới đã train trên laptop
+và metrics.json. Model cũ đi kèm đã được bỏ. Không cần train lại mỗi lần mở hệ thống.
+
+Để train lại theo cấu hình .env, chạy từ thư mục gốc:
 
 ~~~powershell
-$env:POSITION_FILTER_MODE = "ema"  # off để tắt
-$env:POSITION_EMA_ALPHA = "0.35"
-$env:POSITION_EMA_RESET_GAP = "3"
+& .\.venv\Scripts\python.exe .\model\train_regression.py
 ~~~
 
-Khởi động lại gateway sau khi đổi tham số. EMA làm mượt tọa độ sau WCL, không sửa RSSI raw. Các tham số này không áp dụng cho Collection.
+Script so sánh kNN, ExtraTrees, RandomForest, MLP rồi lưu model tốt nhất.
+Các tùy chọn CLI vẫn dùng được để train thử vào thư mục khác.
+Dataset hiện có 6.975 dòng, 182 Zone, 675 cửa sổ 10 record.
+MLP có MDE khoảng 0,95 m khi giữ riêng Zone để đánh giá, chưa xác nhận độ chính xác
+ở lần đo mới. Model cuối train lại trên toàn bộ dataset.
+
+CSV hiện tại có timestamp làm tròn còn hai giá trị. Script train ghép theo thứ tự
+record trong từng đoạn Session/Zone, chưa kiểm tra được thời gian liên tục hoặc
+ranh giới run. Nhãn lấy từ tâm Zone theo 15 cột; giữ đúng phòng và thứ tự ESP.
+Kích thước phòng trong .env phải phù hợp dữ liệu train và model.
+
+Để chạy định vị/AI: COLLECTION_MODE=false; chương trình tự chọn REALTIME_DATABASE_PATH.
+Chạy cả 3 file .bat. AI đợi 10 vector liên tục rồi cập nhật mỗi vector mới.
+Gián đoạn quá 2,1 giây thì tích lũy lại.
+
+Chấm tím và ô AI Position là AI; cam là WCL, xanh là WCL/EMA.
+Quá 5 giây không có kết quả mới thì ẩn chấm AI. Kết quả AI chưa lưu vào DB/log riêng.
+Đặt điện thoại ở tọa độ đo bằng thước, giữ yên 15–20 giây, so với tọa độ AI.
+Không dùng tọa độ WCL làm vị trí thật; đo nhiều điểm và thời điểm để đánh giá.
+
+## 8. Khi AI chờ mãi hoặc không có dữ liệu
+
+Mở /health và /api/v1/epochs/quality?limit=5 trên gateway.
+Online chỉ chứng tỏ có báo cáo, không chứng tỏ node có RSSI của mục tiêu.
+Gateway yêu cầu đủ 4 node, đủ chunk, NTP và overlap tối thiểu 600 ms trước khi phát vector.
+Nếu ESP03 online nhưng không có mẫu mục tiêu thì kiểm tra target MAC, vị trí và
+captured_sample_count trên web ESP03. Cùng session thôi chưa đủ.
+
+Các file live_predictor.py và run_realtime.py đều dùng thật: file đầu giữ model/cửa sổ,
+file sau nhận vector và gửi tọa độ lên dashboard. Không xóa chúng.
+Python có thể tự tạo lại __pycache__; đây là cache bình thường.

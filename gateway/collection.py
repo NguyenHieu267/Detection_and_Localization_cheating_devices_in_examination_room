@@ -8,7 +8,8 @@ import time
 from types import SimpleNamespace
 from uuid import uuid4
 
-from config import EXPECTED_NODE_IDS
+from config import (EXPECTED_NODE_IDS, COLLECTION_DURATION_S, COLLECTION_RECEIVE_WAIT_MS,
+                    COLLECTION_VECTOR_WAIT_MS)
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,8 @@ class DatasetCollection:
         self.database.init_collection_schema()
         self.lock = threading.RLock()
         self.status = {}
-        # Receive already-captured frames after the 30 s interval, without extending capture.
-        self.flush_ms = 3000
+        self.flush_ms = COLLECTION_RECEIVE_WAIT_MS
+        self.duration_s = COLLECTION_DURATION_S
 
     def on_raw(self, report):
         """Store each original RSSI and timestamp, without median, EMA or WCL."""
@@ -157,7 +158,7 @@ class DatasetCollection:
                 "true_x_m": round(zone["x0_m"] + zone["width_m"] / 2, 6),
                 "true_y_m": round(zone["y0_m"] + zone["length_m"] / 2, 6),
                 "start_ms": timestamp,
-                "end_ms": timestamp + 30000,
+                "end_ms": timestamp + self.duration_s * 1000,
                 "room": self.room_snapshot(),
                 "created_at_ms": timestamp,
             }
@@ -167,7 +168,7 @@ class DatasetCollection:
     def tick(self, timestamp=None):
         timestamp = now_ms() if timestamp is None else timestamp
         with self.lock:
-            self.database.rebuild_collection_vectors(timestamp)
+            self.database.rebuild_collection_vectors(timestamp, COLLECTION_VECTOR_WAIT_MS)
             changed = self.database.changed_measurements()
             pending = {
                 measurement["measurement_id"]: measurement
@@ -188,7 +189,7 @@ class DatasetCollection:
                 elif timestamp < measurement["end_ms"] + self.flush_ms:
                     status = "Receiving"
                 else:
-                    complete = measurement["complete_seconds"] == 30 and not interrupted
+                    complete = measurement["complete_seconds"] == measurement["duration_s"] and not interrupted
                     status = "Completed" if complete else "Partial"
                 self.database.update_measurement(
                     measurement["measurement_id"], status, interrupted
@@ -200,6 +201,8 @@ class DatasetCollection:
             active = self.database.measurements(active_only=True)
             return {
                 "server_now_ms": now_ms(),
+                "duration_s": self.duration_s,
+                "receive_wait_ms": self.flush_ms,
                 "nodes": self.nodes(session),
                 "measurements": self.database.measurements(session),
                 "active_measurement": active[0] if active else None,

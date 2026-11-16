@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -21,6 +22,7 @@ from models import LocalizationResult, NodeReady, ObservationItem, RoomConfigReq
 from mqtt_ingest import MqttGateway
 from position_filter import PositionEMA
 from collection import DatasetCollection
+from models import AIPosition
 from models import MeasurementRequest
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -426,6 +428,24 @@ async def update_room(request: RoomConfigRequest) -> dict[str, Any]:
     return await get_room()
 
 
+@app.post("/api/v1/ai/position")
+async def publish_ai_position(position: AIPosition):
+    if COLLECTION_MODE:
+        raise HTTPException(409, "AI display requires realtime mode")
+    if position.track_id != runtime.target_token:
+        raise HTTPException(409, "AI target does not match gateway target")
+    if abs(int(time.time() * 1000) - position.timestamp_ms) > 5000:
+        raise HTTPException(409, "AI position is stale")
+    if position.status == "OK":
+        if position.x_m is None or position.y_m is None or position.zone is None:
+            raise HTTPException(422, "AI position requires coordinates and zone")
+        if (position.x_m > runtime.settings.room_width_m or
+                position.y_m > runtime.settings.room_length_m):
+            raise HTTPException(422, "AI position is outside room")
+    await runtime.ws_manager.broadcast({"message_type": "AI_POSITION", **position.model_dump()})
+    return {"status": "ok"}
+
+
 @app.get("/api/v1/localization/latest")
 async def latest_localization(limit: int = 50) -> list[dict[str, Any]]:
     limit = min(max(limit, 1), 200)
@@ -452,12 +472,13 @@ async def localization_websocket(websocket: WebSocket, session_id: str) -> None:
 
 @app.get("/api/v1/mode")
 async def get_mode():
-    return {"collection_mode": COLLECTION_MODE, "mode": "collection" if COLLECTION_MODE else "realtime"}
+    return {"collection_mode": COLLECTION_MODE, "mode": "collection" if COLLECTION_MODE else "realtime",
+            "session_id": os.getenv("SESSION_ID", "session-dev-001")}
 
 
 def require_collection():
     if not COLLECTION_MODE:
-        raise HTTPException(409, "Set COLLECTION_MODE = True at the bottom of gateway/main.py and restart gateway")
+        raise HTTPException(409, "Set COLLECTION_MODE=true in project .env and restart gateway")
 
 
 @app.get("/api/v1/collection")
@@ -507,8 +528,8 @@ def export_dataset(session_id: str, measurement_id: str | None = None):
     )
 
 
-# Change only this flag, then restart gateway. False keeps the original realtime pipeline.
-COLLECTION_MODE = True
+# Read the mode from project .env; false keeps the original realtime pipeline.
+COLLECTION_MODE = os.getenv("COLLECTION_MODE", "false").strip().lower() in {"true", "1", "yes"}
 runtime = GatewayRuntime()
 
 
@@ -516,4 +537,5 @@ if __name__ == "__main__":
     import uvicorn
 
     print("Starting RF Localization Gateway...")
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("main:app", host=os.getenv("GATEWAY_BIND_HOST", "0.0.0.0"),
+                port=int(os.getenv("GATEWAY_PORT", "8000")), reload=False)
