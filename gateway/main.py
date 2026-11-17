@@ -11,10 +11,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import FileResponse, StreamingResponse
 
-from config import DEFAULT_SETTINGS, EXPECTED_NODE_IDS, Settings, build_settings
+from config import DEFAULT_SETTINGS, EXPECTED_NODE_IDS, build_settings
 from database import Database
 from epoch_reconstructor import EpochReconstructor
 from localization import WCLLocalizationEngine
@@ -150,8 +150,6 @@ class GatewayRuntime:
         )
 
     def on_node_seen(self, node_id: str, session_id: str, message_type: str) -> None:
-        if node_id not in self.node_last_seen_ms:
-            return
         now_ms = int(time.time() * 1000)
         self.node_last_seen_ms[node_id] = now_ms
         self.node_session[node_id] = session_id
@@ -464,8 +462,6 @@ async def localization_websocket(websocket: WebSocket, session_id: str) -> None:
                 await websocket.send_json(item)
         while True:
             await websocket.receive_text()
-    except WebSocketDisconnect:
-        await runtime.ws_manager.remove(websocket)
     except Exception:
         await runtime.ws_manager.remove(websocket)
 
@@ -491,7 +487,7 @@ async def collection_state(session_id: str):
 async def start_measurement(request: MeasurementRequest):
     require_collection()
     try:
-        return runtime.collection.start(request.session_id, request.zone, request.confirm_center)
+        return runtime.collection.start(request.session_id, request.zone)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 

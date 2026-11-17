@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 import math
 from pathlib import Path
@@ -50,13 +50,6 @@ COLLECTION_RECEIVE_WAIT_MS = int(os.getenv("COLLECTION_RECEIVE_WAIT_MS", "3000")
 COLLECTION_VECTOR_WAIT_MS = int(os.getenv("COLLECTION_VECTOR_WAIT_MS", "400"))
 if COLLECTION_DURATION_S < 1 or COLLECTION_RECEIVE_WAIT_MS < 0 or COLLECTION_VECTOR_WAIT_MS < 0:
     raise ValueError("Collection duration must be positive; wait times must be non-negative")
-
-
-@dataclass(frozen=True)
-class NodePosition:
-    node_id: str
-    x_m: float
-    y_m: float
 
 
 @dataclass(frozen=True)
@@ -115,8 +108,6 @@ class Settings:
 
     max_ws_clients: int = int(os.getenv("MAX_WS_CLIENTS", "64"))
 
-    node_positions: tuple[NodePosition, ...] = field(default_factory=tuple)
-
     def __post_init__(self) -> None:
         if self.position_filter_mode not in {"ema", "off"}:
             raise ValueError("POSITION_FILTER_MODE must be ema or off")
@@ -170,42 +161,13 @@ def build_settings(
     """Return settings with room-scaled corner anchors and cell-size-based grid."""
     cell_width = base.grid_cell_width_m if grid_cell_width_m is None else max(0.1, float(grid_cell_width_m))
     cell_length = base.grid_cell_length_m if grid_cell_length_m is None else max(0.1, float(grid_cell_length_m))
-    return Settings(
-        mqtt_host=base.mqtt_host,
-        mqtt_port=base.mqtt_port,
-        mqtt_username=base.mqtt_username,
-        mqtt_password=base.mqtt_password,
-        mqtt_client_id=base.mqtt_client_id,
-        observation_topic=base.observation_topic,
-        ready_topic=base.ready_topic,
-        epoch_timeout_ms=base.epoch_timeout_ms,
-        min_overlap_ms=base.min_overlap_ms,
-        max_mqtt_bytes=base.max_mqtt_bytes,
-        position_filter_mode=base.position_filter_mode,
-        position_ema_alpha=base.position_ema_alpha,
-        position_ema_reset_gap=base.position_ema_reset_gap,
-        database_path=base.database_path,
+    return replace(
+        base,
         room_width_m=float(room_width_m),
         room_length_m=float(room_length_m),
         grid_cell_width_m=cell_width,
         grid_cell_length_m=cell_length,
-        target_device_mac=base.target_device_mac,
-        target_device_token=base.target_device_token,
-        device_token_salt=base.device_token_salt,
-        localize_target_only=base.localize_target_only,
-        node_offline_timeout_ms=base.node_offline_timeout_ms,
-        max_ws_clients=base.max_ws_clients,
-        node_positions=(
-            NodePosition("ESP01", 0.0, 0.0),
-            NodePosition("ESP02", float(room_width_m), 0.0),
-            NodePosition("ESP03", 0.0, float(room_length_m)),
-            NodePosition("ESP04", float(room_width_m), float(room_length_m)),
-        ),
     )
 
 
 DEFAULT_SETTINGS = Settings()
-
-
-def default_config_path() -> Path:
-    return Path(resolve_database_path(DEFAULT_SETTINGS.database_path))

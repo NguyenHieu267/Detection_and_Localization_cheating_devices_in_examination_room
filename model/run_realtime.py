@@ -82,8 +82,7 @@ def process_message(locator, payload, session, earliest_ms, current_ms):
     rssi = payload["rssi_vector_dbm"]
     vector = [rssi.get(node) for node in NODES]
     result = locator.add_vector(session, token, timestamp, vector)
-    if result is not None:
-        result["rssi_vector"] = vector
+    result["rssi_vector"] = vector
     return result
 
 

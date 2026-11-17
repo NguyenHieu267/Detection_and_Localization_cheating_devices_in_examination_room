@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Iterable
 
 from config import Settings
 
@@ -65,15 +64,12 @@ class WCLLocalizationEngine:
             total_weight += weight
             weights[node_id] = weight
 
-        if total_weight <= 0.0 or not math.isfinite(total_weight):
-            return None
-
         u = max(0.0, min(1.0, weighted_u / total_weight))
         v = max(0.0, min(1.0, weighted_v / total_weight))
         x = u * self.settings.room_width_m
         y = v * self.settings.room_length_m
         zone_id = self.zone_id(x, y)
-        confidence = self._confidence(valid, u, v)
+        confidence = self._confidence(weights)
 
         return LocalizationEstimate(
             zone_id=zone_id,
@@ -125,19 +121,14 @@ class WCLLocalizationEngine:
             "zones": zones,
         }
 
-    def _confidence(self, valid: dict[str, float], u: float, v: float) -> float:
+    def _confidence(self, weights: dict[str, float]) -> float:
         """Simple deterministic confidence for the first visualization test."""
-        node_factor = min(len(valid) / 4.0, 1.0)
-        if len(valid) == 1:
+        node_factor = min(len(weights) / 4.0, 1.0)
+        if len(weights) == 1:
             return 0.20
 
         # Prefer positions that are not strongly dominated by one node.
-        normalized = []
-        max_rssi = max(valid.values())
-        for rssi in valid.values():
-            normalized.append(10.0 ** ((rssi - max_rssi) / 10.0))
-        weight_sum = sum(normalized)
-        dominant = max(normalized) / weight_sum if weight_sum else 1.0
+        dominant = max(weights.values()) / sum(weights.values())
         balance = 1.0 - max(0.0, dominant - 0.25) / 0.75
 
         # Stay conservative when only two or three nodes are present.

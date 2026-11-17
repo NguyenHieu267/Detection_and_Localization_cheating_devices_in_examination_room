@@ -40,8 +40,6 @@ class EpochReconstructor:
 
     def add(self, report: RawEpochObservation | EpochObservation) -> str:
         with self._lock:
-            if report.node_id not in self.expected_nodes:
-                raise ValueError("unknown node")
             if isinstance(report, EpochObservation):
                 report.validate_epoch_window()
             key = (report.session_id, report.epoch_id)

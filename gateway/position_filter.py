@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-
 class PositionEMA:
-    """Smooth WCL coordinates; the runtime lock serializes update/reset calls."""
-
     def __init__(self, alpha: float = 0.35, max_gap_epochs: int = 3):
         if not 0 < alpha <= 1 or max_gap_epochs < 1:
             raise ValueError("EMA requires 0 < alpha <= 1 and reset gap >= 1")

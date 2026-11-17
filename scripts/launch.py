@@ -1,5 +1,3 @@
-"""Launch services from the project .env without copying configuration into batch files."""
-
 import argparse
 import os
 from pathlib import Path

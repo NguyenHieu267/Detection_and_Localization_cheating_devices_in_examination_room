@@ -134,12 +134,10 @@ class DatasetCollection:
         if self.database.measurements(active_only=True):
             raise ValueError("Wait for the active measurement to finish receiving")
 
-    def start(self, session, zone_id, confirm_center, timestamp=None):
+    def start(self, session, zone_id, timestamp=None):
         timestamp = now_ms() if timestamp is None else timestamp
         with self.lock:
             self.ensure_idle()
-            if not confirm_center:
-                raise ValueError("Confirm that the phone is at the selected cell centre")
             if not all(node["ready"] for node in self.nodes(session, timestamp)):
                 raise ValueError("All four ESP32 need recent MQTT data, valid NTP and this session")
             zone = next(

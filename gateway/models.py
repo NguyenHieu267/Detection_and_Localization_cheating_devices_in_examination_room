@@ -96,17 +96,6 @@ class LocalizationResult(StrictModel):
     position_ema_alpha: float | None = None
 
 
-class EpochDeviceEvidence(StrictModel):
-    session_id: StrictStr
-    epoch_id: StrictInt
-    device_token: StrictStr
-    node_rssi_dbm: dict[str, float]
-    node_packet_count: dict[str, int]
-    nodes_observed: StrictInt = Field(ge=0)
-    sniff_start_ms: StrictInt = Field(ge=0)
-    sniff_end_ms: StrictInt = Field(gt=0)
-
-
 class RawObservation(StrictModel):
     device_token: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     rssi_dbm: StrictInt = Field(ge=-127, le=0)

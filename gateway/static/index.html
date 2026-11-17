@@ -172,8 +172,6 @@ async function loadRoom() {
 }
 
 function updateConfigText() {
-    if (!room)
-        return;
     $('configText').textContent =
         `Grid: ${room.grid_config.columns} columns × ${room.grid_config.rows} rows · ` +
         `requested cell size: ${room.grid_config.cell_width_m.toFixed(2)}m × ${

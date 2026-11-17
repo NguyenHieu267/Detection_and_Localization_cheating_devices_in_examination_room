@@ -17,7 +17,7 @@ class OnlineLocator:
     def add_vector(self, session, target_mac, timestamp_ms, vector):
         """A vector represents ONE target MAC and ONE 1-second bucket.
 
-        Return None while buffering, or prediction/status dict after warm-up.
+        Return a status dict while buffering, or coordinates after warm-up.
         Do not call separately for each ESP32: merge 4 RSSIs first.
         """
         if not isinstance(timestamp_ms, (int, np.integer)):
