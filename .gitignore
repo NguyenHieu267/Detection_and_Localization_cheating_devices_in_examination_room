@@ -8,5 +8,4 @@ __pycache__/
 /database/*.csv
 /database/*.csv.tmp
 *.jsonl
-.env
 .venv/
