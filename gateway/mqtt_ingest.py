@@ -92,6 +92,8 @@ class MqttGateway:
                 self.on_node_ready(ready)
             else:
                 logger.warning("Unsupported message_type=%r on %s", message_type, msg.topic)
+        except OSError:
+            logger.exception("CSV write failed; close programs that lock the CSV and check disk space")
         except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError) as exc:
             # Pydantic error strings may echo arbitrary input, including secrets.
             logger.warning("MQTT message rejected on %s (%s)", msg.topic, type(exc).__name__)

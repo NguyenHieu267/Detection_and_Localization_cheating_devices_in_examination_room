@@ -99,136 +99,152 @@ Không chọn **Open Wi-Fi** nếu hotspot có mật khẩu. Không cần sửa 
 
 ## 4. Cấu hình chung trong .env
 
-Chỉ sửa file `.env` ở thư mục gốc. `.env.example` là bản mẫu khi cài máy mới,
-không được chương trình đọc. Ba file .bat đọc .env và ưu tiên nó hơn biến cũ trong terminal.
+Chỉ sửa `.env` ở thư mục gốc, rồi khởi động lại các chương trình liên quan.
+Ba file .bat ưu tiên cấu hình .env hơn biến cũ trong terminal.
 
 | Biến | Công dụng |
 |---|---|
-| MQTT_HOST | IPv4 laptop mà ESP32 dùng làm broker |
-| MQTT_PORT | Cổng MQTT, hiện 1883 |
-| TARGET_DEVICE_MAC | MAC mục tiêu; dùng BSSID nếu định vị điện thoại hotspot |
-| SESSION_ID | Session AI và mặc định trên dashboard, hiện session-dev-002 |
-| COLLECTION_MODE | false: định vị + AI; true: thu dataset |
-| REALTIME_DATABASE_PATH | Database khi COLLECTION_MODE=false, mặc định database/ai_realtime.db |
-| COLLECTION_DATABASE_PATH | Database khi COLLECTION_MODE=true, mặc định database/house_collect.db |
-| COLLECTION_DURATION_S | Số giây mỗi lượt thu, mặc định 30 |
-| COLLECTION_RECEIVE_WAIT_MS | Chờ gói đến trễ sau lượt thu, mặc định 3000 ms; không kéo dài thời gian đo |
-| COLLECTION_VECTOR_WAIT_MS | Đợi thêm trước khi tổng hợp cửa sổ 1 giây, mặc định 400 ms |
-| ROOM_WIDTH_M / ROOM_LENGTH_M | Rộng 4.3 m, dài 4.2 m |
-| GRID_CELL_WIDTH_M / GRID_CELL_LENGTH_M | Kích thước ô, hiện 0.3 m |
-| AI_MODEL_PATH | model/output/model.joblib |
-| AI_DATASET_PATH / AI_WINDOW_SIZE | CSV train và số vector trong cửa sổ, hiện 10 |
-| GATEWAY_BIND_HOST / GATEWAY_PORT | Địa chỉ nghe và cổng web |
-| GATEWAY_URL | Địa chỉ AI kết nối gateway trên laptop |
-| MOSQUITTO_EXE | Đường dẫn mosquitto.exe |
+| COLLECTION_MODE | true: thu RSSI thô; false: định vị WCL/EMA và AI |
+| SESSION_ID | Session mặc định trên web và AI; phải giống 4 ESP32 |
+| MQTT_HOST / MQTT_PORT | IPv4 laptop và cổng broker MQTT |
+| TARGET_DEVICE_MAC | MAC mục tiêu; BSSID khi định vị điện thoại hotspot |
+| COLLECTION_CSV_PATH | File dữ liệu thô, hiện database/house_collect.csv |
+| COLLECTION_DURATION_S | Thời gian một lượt đo, hiện 30 giây |
+| COLLECTION_RECEIVE_WAIT_MS | Chờ gói đến trễ, hiện 3000 ms, không kéo dài thời gian đo |
+| REALTIME_CSV_PATH | File kết quả định vị WCL/EMA, hiện database/localization.csv |
+| ROOM_WIDTH_M / ROOM_LENGTH_M | Phòng 4.3 × 4.2 m |
+| GRID_CELL_WIDTH_M / GRID_CELL_LENGTH_M | Ô 0.3 × 0.3 m |
+| AI_MODEL_PATH / AI_DATASET_PATH | Model và dataset vector dành riêng cho train |
+| AI_WINDOW_SIZE | Cửa sổ train, hiện 10 vector; không dùng trong luồng thu thô |
 
-DEVICE_TOKEN_SALT phải khớp firmware. Sau khi đổi .env, khởi động lại các chương trình
-liên quan. Đổi MQTT_PORT thì cập nhật cổng trên ESP32 và firewall.
-Đổi GATEWAY_PORT thì cập nhật cả GATEWAY_URL.
-
-Cấu hình trên ESP32 vẫn lưu riêng trong NVS: đổi session, target MAC, Wi-Fi hoặc MQTT
-thì cần chỉnh trên web của từng ESP32 nữa. .env không tự đẩy cấu hình xuống ESP.
-Thông số trong config.py là giá trị dự phòng; không cần sửa khi có .env.
-Chỉnh phòng trên dashboard áp dụng cho lần chạy hiện tại; muốn giữ sau restart thì sửa .env.
+DEVICE_TOKEN_SALT phải khớp firmware. Đổi IP/MAC/session trong .env cũng cần chỉnh
+trên web từng ESP32; .env không tự đẩy cấu hình xuống node.
+Đổi cổng web thì chỉnh cả GATEWAY_PORT và GATEWAY_URL.
+Thay đổi phòng trên dashboard chỉ áp dụng trong lần chạy hiện tại; sửa .env để giữ sau restart.
 
 ## 5. Chạy hệ thống
 
-Mở 3 terminal tại thư mục dự án; hoặc nhấp đúp từng file .bat.
-
-Terminal 1:
+Chạy mỗi lệnh ở một terminal tại thư mục dự án; hoặc nhấp đúp file .bat:
 
 ~~~powershell
 .\scripts\run_mosquitto.bat
 ~~~
 
-Terminal 2:
-
 ~~~powershell
 .\scripts\run_gateway.bat
 ~~~
 
-Terminal 3, chỉ dùng khi COLLECTION_MODE=false và muốn chạy AI:
+Chỉ chạy AI khi COLLECTION_MODE=false:
 
 ~~~powershell
 .\scripts\run_ai.bat
 ~~~
 
-Mở http://127.0.0.1:8000 (hoặc cổng GATEWAY_PORT), nhấn Ctrl+F5.
-Nếu broker/gateway cũ đang chạy thì Ctrl+C dừng trước, không mở bản thứ hai trùng cổng.
-Giữ Mosquitto, gateway và AI chạy khi đo AI. Không cần kích hoạt venv khi dùng .bat.
+Mở http://127.0.0.1:8000, nhấn Ctrl+F5. Dừng broker/gateway cũ trước để tránh trùng cổng.
+Không cần kích hoạt venv khi chạy .bat, cũng không cần nạp lại ESP32 khi chỉ sửa gateway.
 
-scripts/launch.py đọc .env rồi gọi đúng chương trình, không phải file test.
-Giữ file này để ba .bat không cần chép lại cách đọc .env và tìm đường dẫn.
-Các kiểm tra session, NTP, chống trùng và chống lượt đo chồng nhau bảo vệ dữ liệu,
-không bỏ chỉ để code ngắn hơn. Cấu hình phòng lặp trong code và kiểm tra tồn tại
-model/broker lặp ở launcher đã được rút gọn; lỗi thiếu file do chương trình báo trực tiếp.
-scripts/mosquitto.conf là mẫu cấu hình broker: mở listener cho ESP kết nối,
-cho phép client không dùng tài khoản và dùng IPv4. Launcher thay ${MQTT_PORT}
-bằng cổng trong .env rồi tạo config tạm cho Mosquitto. Chạy broker qua .bat,
-không truyền trực tiếp file mẫu này cho mosquitto.exe.
-Android và iPhone đều chỉ cần một broker; gateway và AI là hai chương trình khác.
+scripts/launch.py đọc .env rồi gọi chương trình tương ứng.
+scripts/mosquitto.conf là mẫu cấu hình broker; launcher thay ${MQTT_PORT} bằng cổng
+trong .env rồi truyền config tạm cho Mosquitto. Không chạy trực tiếp file mẫu.
+Android và iPhone đều chỉ cần một broker.
 
-## 6. Thu dataset
+## 6. Luồng thu RSSI thô và lưu CSV
 
-Trong .env đặt COLLECTION_MODE=true; chương trình tự chọn COLLECTION_DATABASE_PATH.
-Chạy Mosquitto và gateway, chọn đúng session giống 4 node.
-Cần 4 node READY: online, cùng session, NTP đúng và có báo cáo mới.
+Đặt COLLECTION_MODE=true trong .env, rồi chạy Mosquitto và gateway.
 
-1. Nhập phòng và kích thước ô, bấm Apply room + grid.
-2. Chọn ô, đặt điện thoại tại tâm vàng và xác nhận.
-3. Bấm Start Measurement: đo ngay trong COLLECTION_DURATION_S giây, mặc định 30, không đếm ngược.
-4. Receiving chờ theo COLLECTION_RECEIVE_WAIT_MS, mặc định 3 giây, chỉ nhận gói đến muộn.
-5. Completed là đủ dữ liệu và không ghi nhận gián đoạn; Partial vẫn giữ mẫu đã nhận.
-6. Export Dataset CSV là bảng vector 8 cột; Export Raw Frames CSV là dữ liệu gốc chi tiết.
+~~~text
+Điện thoại phát Wi-Fi
+  -> ESP32 bắt frame: RSSI gốc + capture_unix_ms của chính ESP32
+  -> Queue / task gửi đóng gói nhiều mẫu gốc thành MQTT JSON
+  -> Mosquitto chuyển tiếp tới gateway
+  -> Gateway xác định session, lượt đo và thời điểm bắt mẫu
+  -> Ghi ngay từng mẫu vào CSV, không median, mean, smoothing hoặc WCL
+~~~
 
-RSSI gốc giữ nguyên. Bảng rssi_vectors riêng lấy median mỗi cửa sổ 1 giây,
-thiếu node ghi NULL, vector giữ thứ tự ESP01..ESP04.
-Zone và tọa độ thật do người đo chọn, không phải vị trí WCL.
-measurement_id phân biệt từng lượt; run_number tăng riêng theo Session + Zone.
-30 giây bắt đầu giữa giây có thể giao với 31 cửa sổ Unix.
+Chọn ô, đặt điện thoại đúng tâm vàng, xác nhận rồi bấm Start Measurement.
+Lượt đo bắt đầu ngay trong COLLECTION_DURATION_S giây.
+Receiving sau đó chỉ chờ những mẫu đã bắt trong khoảng đo nhưng tới gateway muộn.
+Mẫu ngoài khoảng đo hoặc ngoài lượt đo đang chạy không được gắn nhãn để lưu.
+Gói MQTT gửi lặp chỉ ghi một lần; các frame riêng biệt có cùng RSSI/timestamp vẫn giữ đủ.
 
-Tắt Chrome/MQTT/gateway không xóa dữ liệu đã lưu. Chạy lại đúng đường dẫn database và
-Session ID để xem/xuất dữ liệu cũ. Không lưu lại CSV qua Excel nếu nó làm tròn timestamp.
+ESP32 vẫn dùng firmware cũ: mỗi chu kỳ 1000 ms bắt frame trong 700 ms rồi gửi batch.
+Gateway không chọn lại mẫu theo cửa sổ 1 giây, không ghép mẫu các node và không sửa RSSI.
+Chỉ lưu mẫu của target đã chọn; NTP cần đồng bộ để timestamp có nghĩa.
 
-## 7. Train và đo AI
+CSV chính đúng 8 cột:
 
-Giữ một thư mục model: model/output/, chứa model mới đã train trên laptop
-và metrics.json. Model cũ đi kèm đã được bỏ. Không cần train lại mỗi lần mở hệ thống.
+~~~csv
+session,timestamp,Zone,ESP01 - RSSI,ESP02 - RSSI,ESP03 - RSSI,ESP04 - RSSI,Vector RSSI
+session-dev-002,2026-11-18T09:30:00.123Z,Z1_run01,-51,NULL,NULL,NULL,"[-51,null,null,null]"
+session-dev-002,2026-11-18T09:30:00.127Z,Z1_run01,NULL,-62,NULL,NULL,"[null,-62,null,null]"
+session-dev-002,2026-11-18T09:30:00.128Z,Z1_run01,-53,NULL,NULL,NULL,"[-53,null,null,null]"
+~~~
 
-Để train lại theo cấu hình .env, chạy từ thư mục gốc:
+Mỗi dòng là MỘT frame của MỘT ESP32. Timestamp là thời điểm ESP bắt frame,
+chuyển nguyên vẹn từ Unix ms sang UTC có đúng 3 chữ số mili giây.
+Z nghĩa là UTC, không phải giờ Việt Nam. Thứ tự dòng là thứ tự nhận qua MQTT;
+có thể lệch thứ tự timestamp giữa các ESP. Không thay timestamp bằng giờ laptop
+hoặc làm tròn về đầu giây. NULL ở 3 node còn lại là vì dòng đó thuộc một node,
+không phải bị mất ba mẫu. Không tạo dòng NULL giả khi không có frame.
+
+Đo lại cùng Session + Zone tăng nhãn Z1_run01, Z1_run02... Kể cả chạy lại gateway
+vẫn tiếp tục số run đã lưu; session khác bắt đầu lại run01.
+Không ghép các run lại thành Z1 trong file.
+
+File lưu trực tiếp tại COLLECTION_CSV_PATH, không cần bấm download mới được lưu.
+Nút Download Raw CSV tải các dòng của session đang chọn.
+Bảng web hiển thị tối đa 50 mẫu mới nhất, file CSV giữ toàn bộ mẫu.
+
+Cạnh CSV chính có file *_runs.csv: chỉ lưu metadata lượt đo, phòng, số mẫu và trạng thái.
+Không đưa file này vào train và không xóa nếu muốn giữ lịch sử trên web.
+Completed nghĩa là kết thúc lượt, đã có mẫu từ cả 4 node và không ghi nhận gián đoạn;
+Partial vẫn giữ mọi mẫu đã ghi, không thêm hoặc suy đoán giá trị thiếu.
+
+Mỗi batch được ghi/flush xuống đĩa ngay. Nếu dừng gateway giữa lượt, lượt đó thành Partial.
+Nếu mất điện hoặc tiến trình bị kill, dữ liệu đã ghi vẫn còn; lượt chưa hoàn tất
+được đánh dấu Partial khi mở lại. Có thể mất batch đang ghi lúc xảy ra lỗi.
+Không mở file đang thu bằng chương trình khóa quyền ghi; tải một bản CSV để xem bằng Excel.
+
+## 7. Timestamp và dữ liệu cũ
+
+Excel hiện 1.79E+12 có thể chỉ là cách hiển thị số. Kiểm tra CSV bằng VSCode để biết
+file còn nguyên 13 chữ số hay đã bị lưu lại dạng làm tròn.
+CSV mới dùng UTC dạng 2026-11-18T09:30:00.123Z nên không hiện số khoa học.
+
+Nếu CSV cũ đã bị Excel ghi đè/làm tròn, không thể tự khôi phục các chữ số bị mất.
+Cần bản xuất gốc hoặc dữ liệu gốc tương ứng.
+Các file .db cũ được giữ nguyên để không mất dữ liệu; gateway mới không đọc/ghi
+SQLite và không tự chuyển dữ liệu cũ sang CSV. CSV mới bắt đầu từ dữ liệu đo mới.
+Code SQLite và các luồng tổng hợp/di trú DB cũ đã bỏ.
+
+## 8. Định vị / AI
+
+Đặt COLLECTION_MODE=false, chạy cả 3 file .bat.
+Luồng định vị vẫn ghép vector RSSI, WCL/EMA và WebSocket như trước;
+yêu cầu đủ 4 node, đủ chunk, NTP và overlap tối thiểu 600 ms.
+Kết quả WCL/EMA được ghi CSV tại REALTIME_CSV_PATH.
+Chấm tím là AI, cam là WCL, xanh là WCL/EMA.
+Không ghi CSV tọa độ AI riêng.
+
+Thu thô và train là hai việc khác nhau. CSV mới là frame rời của từng ESP,
+không thể coi 10 dòng raw là 10 vector đồng bộ/10 giây.
+Script train sẽ từ chối CSV chỉ gồm các frame một node, tránh train nhầm.
+Muốn train từ dữ liệu mới cần bước chuẩn bị vector riêng, không ghi đè CSV thô.
+Dataset vector cũ trong model/dataset-vectors.csv và model hiện tại không bị sửa.
+
+Train lại bằng dataset vector đã chuẩn bị:
 
 ~~~powershell
 & .\.venv\Scripts\python.exe .\model\train_regression.py
 ~~~
 
-Script so sánh kNN, ExtraTrees, RandomForest, MLP rồi lưu model tốt nhất.
-Các tùy chọn CLI vẫn dùng được để train thử vào thư mục khác.
-Dataset hiện có 6.975 dòng, 182 Zone, 675 cửa sổ 10 record.
-MLP có MDE khoảng 0,95 m khi giữ riêng Zone để đánh giá, chưa xác nhận độ chính xác
-ở lần đo mới. Model cuối train lại trên toàn bộ dataset.
+CSV có nhãn Z1_run01 được giữ riêng từng run khi tạo cửa sổ;
+tọa độ và chia Zone đánh giá vẫn dùng Z1. Sai số model cần đánh giá bằng lần đo mới,
+không lấy tọa độ WCL làm nhãn thật.
 
-CSV hiện tại có timestamp làm tròn còn hai giá trị. Script train ghép theo thứ tự
-record trong từng đoạn Session/Zone, chưa kiểm tra được thời gian liên tục hoặc
-ranh giới run. Nhãn lấy từ tâm Zone theo 15 cột; giữ đúng phòng và thứ tự ESP.
-Kích thước phòng trong .env phải phù hợp dữ liệu train và model.
+## 9. File code cần xem
 
-Để chạy định vị/AI: COLLECTION_MODE=false; chương trình tự chọn REALTIME_DATABASE_PATH.
-Chạy cả 3 file .bat. AI đợi 10 vector liên tục rồi cập nhật mỗi vector mới.
-Gián đoạn quá 2,1 giây thì tích lũy lại.
-
-Chấm tím và ô AI Position là AI; cam là WCL, xanh là WCL/EMA.
-Quá 5 giây không có kết quả mới thì ẩn chấm AI. Kết quả AI chưa lưu vào DB/log riêng.
-Đặt điện thoại ở tọa độ đo bằng thước, giữ yên 15–20 giây, so với tọa độ AI.
-Không dùng tọa độ WCL làm vị trí thật; đo nhiều điểm và thời điểm để đánh giá.
-
-## 8. Khi AI chờ mãi hoặc không có dữ liệu
-
-Mở /health và /api/v1/epochs/quality?limit=5 trên gateway.
-Online chỉ chứng tỏ có báo cáo, không chứng tỏ node có RSSI của mục tiêu.
-Gateway yêu cầu đủ 4 node, đủ chunk, NTP và overlap tối thiểu 600 ms trước khi phát vector.
-Nếu ESP03 online nhưng không có mẫu mục tiêu thì kiểm tra target MAC, vị trí và
-captured_sample_count trên web ESP03. Cùng session thôi chưa đủ.
-
-Các file live_predictor.py và run_realtime.py đều dùng thật: file đầu giữ model/cửa sổ,
-file sau nhận vector và gửi tọa độ lên dashboard. Không xóa chúng.
-Python có thể tự tạo lại __pycache__; đây là cache bình thường.
+- gateway/collection.py: nhận frame, gắn lượt đo, thời gian đo và trạng thái.
+- gateway/csv_store.py: chuyển timestamp UTC, ghi CSV thô, lưu metadata và xuất CSV.
+- gateway/main.py: nối MQTT, API, CSV, dashboard và luồng định vị.
+- gateway/static/index.html: chọn ô, bắt đầu đo, xem frame và tải CSV.

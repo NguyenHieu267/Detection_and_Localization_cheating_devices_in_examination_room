@@ -69,7 +69,7 @@ def check_gateway(base, bundle):
 def process_message(locator, payload, session, earliest_ms, current_ms):
     if payload.get("session_id") != session or "rssi_vector_dbm" not in payload:
         return None
-    # The gateway sends old database history on connect. Only use fresh epochs.
+    # The gateway sends old localization history on connect. Only use fresh epochs.
     epoch = payload.get("epoch_id")
     if not isinstance(epoch, int):
         return None

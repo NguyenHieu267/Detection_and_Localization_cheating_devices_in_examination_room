@@ -1,54 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 import os
 import math
 from pathlib import Path
+from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATABASE_DIR = PROJECT_ROOT / "database"
+def csv_path(value):
+    return str((PROJECT_ROOT / Path(value).expanduser()).resolve())
 
-
-def resolve_database_path(path: str | Path | None = None) -> str:
-    """Resolve SQLite files independently of the terminal's working directory.
-
-    Relative paths live under database/. Old default locations are aliases for
-    database/rf_gateway.db; existing files are never moved or merged implicitly.
-    Explicit absolute paths to other files and :memory: remain supported.
-    """
-    mode = os.getenv("COLLECTION_MODE", "false").strip().lower() in {"true", "1", "yes"}
-    default_path = os.getenv("COLLECTION_DATABASE_PATH" if mode else "REALTIME_DATABASE_PATH", "")
-    value = str(path if path is not None else (os.getenv("DATABASE_PATH") or default_path)).strip()
-    if value == ":memory:":
-        return value
-    requested = Path(value or "rf_gateway.db").expanduser()
-    legacy_defaults = {
-        (PROJECT_ROOT / "rf_gateway.db").resolve(),
-        (PROJECT_ROOT / "gateway" / "rf_gateway.db").resolve(),
-        (PROJECT_ROOT / "rf_localization_mvp_node_grid" / "rf_gateway.db").resolve(),
-        (PROJECT_ROOT / "rf_localization_mvp_node_grid" / "gateway" / "rf_gateway.db").resolve(),
-    }
-    candidate = (PROJECT_ROOT / requested).resolve()
-    if candidate in legacy_defaults:
-        return str(DATABASE_DIR / "rf_gateway.db")
-    if requested.is_absolute():
-        return str(candidate)
-    if requested.parts and requested.parts[0].lower() == "database":
-        requested = Path(*requested.parts[1:])
-    candidate = (DATABASE_DIR / requested).resolve()
-    if not candidate.is_relative_to(DATABASE_DIR):
-        raise ValueError("Relative DATABASE_PATH must stay inside the database directory")
-    return str(candidate)
-
-from dotenv import load_dotenv
 
 load_dotenv(PROJECT_ROOT / ".env")
 
 
 COLLECTION_DURATION_S = int(os.getenv("COLLECTION_DURATION_S", "30"))
 COLLECTION_RECEIVE_WAIT_MS = int(os.getenv("COLLECTION_RECEIVE_WAIT_MS", "3000"))
-COLLECTION_VECTOR_WAIT_MS = int(os.getenv("COLLECTION_VECTOR_WAIT_MS", "400"))
-if COLLECTION_DURATION_S < 1 or COLLECTION_RECEIVE_WAIT_MS < 0 or COLLECTION_VECTOR_WAIT_MS < 0:
+if COLLECTION_DURATION_S < 1 or COLLECTION_RECEIVE_WAIT_MS < 0:
     raise ValueError("Collection duration must be positive; wait times must be non-negative")
 
 
@@ -81,8 +49,9 @@ class Settings:
     position_ema_alpha: float = float(os.getenv("POSITION_EMA_ALPHA", "0.35"))
     position_ema_reset_gap: int = int(os.getenv("POSITION_EMA_RESET_GAP", "3"))
 
-    # SQLite.
-    database_path: str = field(default_factory=resolve_database_path)
+    # CSV files; paths are resolved relative to the project, independent of terminal cwd.
+    collection_csv_path: str = csv_path(os.getenv("COLLECTION_CSV_PATH", "database/dataset-raw.csv"))
+    realtime_csv_path: str = csv_path(os.getenv("REALTIME_CSV_PATH", "database/localization.csv"))
 
     # Room and editable grid CELL SIZE. The Gateway automatically derives
     # the number of columns/rows from the room dimensions.

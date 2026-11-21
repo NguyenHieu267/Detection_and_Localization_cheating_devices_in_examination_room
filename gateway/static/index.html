@@ -94,8 +94,7 @@
     <p id="measurementStatus">Ready · select a cell; all four ESP32 must be READY.</p>
     <progress id="measurementProgress" value="0" max="30" style="width:100%"></progress>
     <p id="measurementHistory" class="sub"></p>
-    <a id="exportVectors">Export Dataset CSV (8 columns)</a> ·
-    <a id="exportRaw">Export Raw Frames CSV (details)</a>
+    <a id="exportCsv">Download Raw CSV (8 columns)</a>
   </div>
 
   <div class="layout">
@@ -132,12 +131,9 @@
     </div>
   </div>
   <div class="panel" id="datasetTable" hidden style="overflow:auto">
-    <strong>RSSI vectors · 1-second median · Zone = selected Ground Truth</strong>
+    <strong>Original RSSI frames - one row per ESP32 frame - no aggregation</strong>
     <table><thead><tr><th>session</th><th>timestamp</th><th>Zone</th><th>ESP01 - RSSI</th><th>ESP02 - RSSI</th><th>ESP03 - RSSI</th><th>ESP04 - RSSI</th><th>Vector RSSI</th></tr></thead><tbody id="vectorRows"></tbody></table>
-    <details id="rawDetails" style="margin-top:16px">
-      <summary>Original raw frames (details, unchanged RSSI)</summary>
-      <table><thead><tr><th>session</th><th>timestamp_ms</th><th>node_id</th><th>RSSI raw</th><th>Zone</th><th>True X</th><th>True Y</th></tr></thead><tbody id="rawRows"></tbody></table>
-    </details>
+
   </div>
 </div>
 <script>
@@ -490,29 +486,14 @@ async function refreshCollection() {
             collectionState.measurements.slice(0, 8)
                 .map(m => `${m.zone}/run${m.run_number}: ${m.status}`)
                 .join(' · ');
-        $('exportRaw').href = '/api/v1/dataset/export/raw?' + query;
-        $('exportVectors').href = '/api/v1/dataset/export/vectors?' + query;
+        $('exportCsv').href = '/api/v1/dataset/export?' + query;
         const filter = latest ? '&measurement_id=' + encodeURIComponent(latest.measurement_id) : '';
-        const vectors = await apiJson('/api/v1/vectors?' + query + filter);
+        const samples = await apiJson('/api/v1/collection/samples?' + query + filter);
         $('vectorRows').innerHTML =
-            vectors.sort((a, b) => a.timestamp - b.timestamp)
+            samples.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
                 .map(row => `<tr><td>${row.session}</td><td>${row.timestamp}</td><td>${
-                         row.zone ?? 'NULL'}</td>${
-                         row.vector.map(value => `<td>${value ?? 'NULL'}</td>`).join('')}<td>${
-                         JSON.stringify(row.vector)}</td></tr>`)
-                .join('');
-        const rows =
-            $('rawDetails').open ? await apiJson('/api/v1/collection/raw?' + query + filter) : [];
-        $('rawRows').innerHTML =
-            rows.slice(0, 30)
-                .map(sample => `<tr><td>${sample.session}</td><td>${sample.timestamp_ms}</td><td>${
-                         sample.node_id}</td><td>${sample.rssi_dbm}</td><td>${
-                         sample.zone ?? 'NULL'}</td><td>${
-                         sample.true_x_m == null ? 'NULL'
-                                                 : Number(sample.true_x_m).toFixed(2)}</td><td>${
-                         sample.true_y_m == null ? 'NULL'
-                                                 : Number(sample.true_y_m).toFixed(2)}</td></tr>`)
-                .join('');
+                    row.zone}</td>${row.vector.map(value => `<td>${value ?? 'NULL'}</td>`).join('')}
+                    <td>${JSON.stringify(row.vector)}</td></tr>`).join('');
         drawRoom();
     } catch (err) {
         $('modeLabel').textContent = 'Collection status unavailable: ' + err.message;
@@ -521,10 +502,6 @@ async function refreshCollection() {
 }
 
 $('confirmCenter').onchange = refreshCollection;
-$('rawDetails').ontoggle = () => {
-    if (collectionMode && $('rawDetails').open)
-        refreshCollection();
-};
 $('room').onclick = e => {
     const rect = e.target.closest('[data-zone]');
     if (!collectionMode || !rect || activeMeasurement())

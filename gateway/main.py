@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import logging
 import os
-import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -15,7 +14,7 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import FileResponse, StreamingResponse
 
 from config import DEFAULT_SETTINGS, EXPECTED_NODE_IDS, build_settings
-from database import Database
+from csv_store import CsvStore
 from epoch_reconstructor import EpochReconstructor
 from localization import WCLLocalizationEngine
 from models import LocalizationResult, NodeReady, ObservationItem, RoomConfigRequest
@@ -76,19 +75,9 @@ class WebSocketManager:
 class GatewayRuntime:
     def __init__(self) -> None:
         self.base_settings = DEFAULT_SETTINGS
-        self.database = Database(self.base_settings.database_path)
-        logger.info("SQLite database: %s", self.database.path)
-        saved = self.database.load_room_config()
-        if saved:
-            self.settings = build_settings(
-                float(saved["width_m"]),
-                float(saved["length_m"]),
-                grid_cell_width_m=float(saved["grid_cell_width_m"] or self.base_settings.grid_cell_width_m),
-                grid_cell_length_m=float(saved["grid_cell_length_m"] or self.base_settings.grid_cell_length_m),
-                base=self.base_settings,
-            )
-        else:
-            self.settings = self.base_settings
+        self.settings = self.base_settings
+        self.storage = CsvStore(self.settings.collection_csv_path, self.settings.realtime_csv_path)
+        logger.info("Collection CSV: %s", self.storage.dataset_path)
 
         self.localizer = WCLLocalizationEngine(self.settings)
         # Room changes run on asyncio, while MQTT/expiry can produce positions.
@@ -102,9 +91,7 @@ class GatewayRuntime:
             timeout_ms=self.settings.epoch_timeout_ms,
             on_complete=self.on_unified_epoch,
             min_overlap_ms=self.settings.min_overlap_ms,
-            on_raw=self.database.store_raw_chunk,
             on_quality=self.on_epoch_quality,
-            is_closed=self.database.epoch_closed,
         )
         self.mqtt = MqttGateway(
             self.settings,
@@ -142,7 +129,6 @@ class GatewayRuntime:
             )
             self.localizer = WCLLocalizationEngine(self.settings)
             self.position_filter.reset()
-            self.database.save_room_config(width_m, length_m, grid_cell_width_m, grid_cell_length_m)
         logger.info(
             "Room changed: %.2f x %.2f m -> cell %.2f x %.2f m -> grid %d cols x %d rows",
             width_m, length_m, grid_cell_width_m, grid_cell_length_m,
@@ -154,14 +140,8 @@ class GatewayRuntime:
         self.node_last_seen_ms[node_id] = now_ms
         self.node_session[node_id] = session_id
         self.node_message_type[node_id] = message_type
-        self.database.upsert_node_seen(node_id=node_id, session_id=session_id, seen_ms=now_ms)
 
     def on_node_ready(self, ready: NodeReady) -> None:
-        self.database.upsert_node_ready(
-            node_id=ready.node_id,
-            session_id=ready.session_id,
-            timestamp_ms=ready.timestamp_ms,
-        )
         logger.info("NODE_READY: %s session=%s", ready.node_id, ready.session_id)
 
     def node_status(self) -> list[dict[str, Any]]:
@@ -205,18 +185,6 @@ class GatewayRuntime:
             node_rssi = {node_id: item.median_rssi_dbm for node_id, item in node_items.items()}
             node_packet_count = {node_id: item.packet_count for node_id, item in node_items.items()}
 
-            self.database.upsert_epoch_device_evidence(
-                session_id=session_id,
-                epoch_id=epoch_id,
-                device_token=device_token,
-                nodes_observed=len(node_rssi),
-                sniff_start_ms=sniff_start_ms,
-                sniff_end_ms=sniff_end_ms,
-                node_rssi=node_rssi,
-                node_packet_count=node_packet_count,
-                created_at_ms=created_at_ms,
-            )
-
             if not self.should_localize(device_token, len(merged)):
                 continue
 
@@ -257,26 +225,7 @@ class GatewayRuntime:
                     overlap_ms=self.reconstructor.last_quality.get("overlap_ms", 0),
                 )
 
-            self.database.upsert_localization_update(
-                session_id=result.session_id,
-                epoch_id=result.epoch_id,
-                track_id=result.track_id,
-                zone_id=result.zone_id,
-                x_m=result.x_m,
-                y_m=result.y_m,
-                confidence=result.confidence,
-                nodes_used=result.nodes_used,
-                rssi_vector=result.rssi_vector_dbm,
-                created_at_ms=result.timestamp_ms,
-                raw_x_m=result.raw_x_m,
-                raw_y_m=result.raw_y_m,
-                raw_zone_id=result.raw_zone_id,
-                filtered_x_m=result.filtered_x_m,
-                filtered_y_m=result.filtered_y_m,
-                filtered_zone_id=result.filtered_zone_id,
-                position_filter_mode=result.position_filter_mode,
-                position_ema_alpha=result.position_ema_alpha,
-            )
+            self.storage.save_localization(result.model_dump())
 
             if self.ws_manager.loop is not None:
                 asyncio.run_coroutine_threadsafe(
@@ -289,7 +238,7 @@ class GatewayRuntime:
             )
 
     def on_epoch_quality(self, quality: dict) -> None:
-        self.database.store_quality(quality)
+        self.storage.store_quality(quality)
         logger.info("EPOCH session=%s epoch=%s status=%s overlap=%dms",
                     quality["session_id"], quality["epoch_id"], quality["status"], quality["overlap_ms"])
         if self.ws_manager.loop is not None:
@@ -302,8 +251,8 @@ async def expiry_loop() -> None:
         if COLLECTION_MODE:
             try:
                 runtime.collection.tick()
-            except sqlite3.Error:
-                logger.exception("Collection processing failed; persisted windows will be retried")
+            except OSError:
+                logger.exception("Collection CSV write failed; close Excel if it locks the CSV, then retry")
         else:
             runtime.reconstructor.flush_expired()
         await asyncio.sleep(0.1)
@@ -319,7 +268,8 @@ async def lifespan(app: FastAPI):
     finally:
         task.cancel()
         runtime.mqtt.stop()
-        runtime.database.close()
+        if runtime.collection is not None:
+            runtime.collection.tick(stopping=True)
 
 
 app = FastAPI(title="RF Localization Gateway MVP", version="1.2.0", lifespan=lifespan)
@@ -336,7 +286,8 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "collection_mode": COLLECTION_MODE,
-        "database_path": runtime.database.path,
+        "collection_csv_path": str(runtime.storage.dataset_path),
+        "realtime_csv_path": str(runtime.storage.realtime_path),
         "vector_mode": "strict_4",
         "min_overlap_ms": runtime.settings.min_overlap_ms,
         "epoch_counters": dict(runtime.reconstructor.counters),
@@ -371,13 +322,7 @@ async def get_nodes(session_id: str = "session-dev-001") -> list[dict[str, Any]]
 
 @app.get("/api/v1/epochs/quality")
 async def epoch_quality(limit: int = 50):
-    return runtime.database.latest_quality(min(max(limit, 1), 200))
-
-
-@app.get("/api/v1/raw/export")
-def export_raw(session_id: str):
-    return StreamingResponse(runtime.database.export_raw(session_id), media_type="application/x-ndjson",
-                             headers={"Content-Disposition": 'attachment; filename="raw-rssi.jsonl"'})
+    return runtime.storage.latest_quality(min(max(limit, 1), 200))
 
 
 @app.get("/api/v1/room")
@@ -447,7 +392,7 @@ async def publish_ai_position(position: AIPosition):
 @app.get("/api/v1/localization/latest")
 async def latest_localization(limit: int = 50) -> list[dict[str, Any]]:
     limit = min(max(limit, 1), 200)
-    return runtime.database.latest_localization(limit)
+    return runtime.storage.latest_localization(limit)
 
 
 @app.websocket("/ws/v1/sessions/{session_id}")
@@ -456,7 +401,7 @@ async def localization_websocket(websocket: WebSocket, session_id: str) -> None:
     if not accepted:
         return
     try:
-        history = runtime.database.latest_localization(50)
+        history = runtime.storage.latest_localization(50)
         for item in reversed(history):
             if item.get("session_id") == session_id:
                 await websocket.send_json(item)
@@ -492,33 +437,17 @@ async def start_measurement(request: MeasurementRequest):
         raise HTTPException(409, str(exc)) from exc
 
 
-@app.get("/api/v1/collection/raw")
-async def collection_raw(session_id: str, measurement_id: str | None = None, limit: int = 50):
+@app.get("/api/v1/collection/samples")
+async def collection_samples(session_id: str, measurement_id: str | None = None, limit: int = 50):
     require_collection()
-    return runtime.database.latest_samples(session_id, min(max(limit, 1), 200), measurement_id)
+    return runtime.storage.latest_samples(session_id, min(max(limit, 1), 200), measurement_id)
 
 
-@app.get("/api/v1/vectors")
-async def collection_vectors(session_id: str, measurement_id: str | None = None, limit: int = 50):
-    require_collection()
-    return runtime.database.latest_vectors(session_id, min(max(limit, 1), 200), measurement_id)
-
-
-@app.get("/api/v1/dataset/export/vectors")
-def export_vectors(session_id: str, measurement_id: str | None = None):
-    require_collection()
-    return StreamingResponse(
-        runtime.database.export_collection_vectors(session_id, measurement_id),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="dataset-vectors.csv"'},
-    )
-
-
-@app.get("/api/v1/dataset/export/raw")
+@app.get("/api/v1/dataset/export")
 def export_dataset(session_id: str, measurement_id: str | None = None):
     require_collection()
     return StreamingResponse(
-        runtime.database.export_collection_raw(session_id, measurement_id),
+        runtime.storage.export_samples(session_id, measurement_id),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="dataset-raw.csv"'},
     )

@@ -23,14 +23,12 @@ class EpochReconstructor:
     """MQTT ingestion and asyncio expiry share one lock; never emit an epoch twice."""
 
     def __init__(self, expected_nodes: set[str], timeout_ms: int, on_complete: Callable,
-                 min_overlap_ms: int = 600, on_raw=None, on_quality=None, is_closed=None):
+                 min_overlap_ms: int = 600, on_quality=None):
         self.expected_nodes = expected_nodes
         self.timeout_s = timeout_ms / 1000.0
         self.on_complete = on_complete
         self.min_overlap_ms = min_overlap_ms
-        self.on_raw = on_raw
         self.on_quality = on_quality
-        self.is_closed = is_closed
         self._buckets = {}
         self._closed = set()
         self._floor = {}
@@ -43,7 +41,7 @@ class EpochReconstructor:
             if isinstance(report, EpochObservation):
                 report.validate_epoch_window()
             key = (report.session_id, report.epoch_id)
-            if key in self._closed or report.epoch_id <= self._floor.get(report.session_id, -1) or (self.is_closed and self.is_closed(*key)):
+            if key in self._closed or report.epoch_id <= self._floor.get(report.session_id, -1):
                 self.counters["late"] += 1
                 return "late"
             bucket = self._buckets.get(key)
@@ -78,8 +76,6 @@ class EpochReconstructor:
                     fields = ("chunk_count", "epoch_ms", "clock_synced", "sniff_start_unix_ms", "sniff_end_unix_ms")
                     if any(getattr(first, f) != getattr(report, f) for f in fields):
                         raise ValueError("inconsistent chunk metadata")
-                if self.on_raw:
-                    self.on_raw(report)
                 chunks[report.chunk_index] = report
             complete_nodes = set(bucket.legacy) | {
                 node for node, chunks in bucket.chunks.items()

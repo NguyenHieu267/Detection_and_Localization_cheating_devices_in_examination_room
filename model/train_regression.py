@@ -54,6 +54,7 @@ def zone_center(zone: str, grid_columns=15, cell_width=0.30, cell_length=0.30,
 def load_csv(path):
     segments = []
     current = None
+    observed_counts = []
     with open(path, "r", encoding="utf-8-sig", newline="") as fh:
         rdr = csv.DictReader(fh)
         need = {"session", "Zone", *RSSI_COLUMNS}
@@ -70,6 +71,13 @@ def load_csv(path):
                 v = row[col].strip()
                 vals.append(float(v) if v and v.lower() not in ("null", "nan", "na") else np.nan)
             current["rows"].append(vals)
+            observed_counts.append(sum(np.isfinite(vals)))
+    nonempty = [count for count in observed_counts if count]
+    if nonempty and max(nonempty) == 1:
+        raise ValueError(
+            "This CSV contains individual raw ESP32 frames, not synchronized vectors. "
+            "Prepare a separate vector dataset explicitly before training; do not modify the raw CSV."
+        )
     return segments
 
 
@@ -98,7 +106,8 @@ def build_windows(segments, window_size=5, grid_columns=15, cell_width=.3,
     xs, ys, zones, sessions = [], [], [], []
     rejected = 0
     for segment in segments:
-        session, zone = segment["key"]
+        session, run_label = segment["key"]
+        zone = run_label.split("_run", 1)[0]
         xy = zone_center(zone, grid_columns, cell_width, cell_length, room_width, room_length)
         rows = segment["rows"]
         for start in range(0, len(rows) - window_size + 1, window_size):

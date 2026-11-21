@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 
-from dotenv import load_dotenv, dotenv_values
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -27,8 +27,6 @@ def run(service):
     if not (ROOT / ".env").is_file():
         raise ValueError("Missing project .env; copy .env.example to .env first")
     load_dotenv(ROOT / ".env", override=True)
-    if "DATABASE_PATH" not in dotenv_values(ROOT / ".env"):
-        os.environ.pop("DATABASE_PATH", None)
     args = command(service)
     if service != "mosquitto":
         return subprocess.call(args, cwd=ROOT)
